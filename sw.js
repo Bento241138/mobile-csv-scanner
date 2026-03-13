@@ -1,16 +1,13 @@
 const CACHE = 'stock-v3';
 const FILES = [
-  '/index.html',
-  '/html5-qrcode.min.js',
-  '/manifest.json',
-  '/icon-192.png',
-  '/icon-512.png'
+  '/mobile-csv-scanner/index.html',
+  '/mobile-csv-scanner/manifest.json',
+  '/mobile-csv-scanner/icon-192.png',
+  '/mobile-csv-scanner/icon-512.png'
 ];
 
 self.addEventListener('install', e => {
-  e.waitUntil(
-    caches.open(CACHE).then(c => c.addAll(FILES.filter(f => f !== '/html5-qrcode.min.js')))
-  );
+  e.waitUntil(caches.open(CACHE).then(c => c.addAll(FILES)));
   self.skipWaiting();
 });
 

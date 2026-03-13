@@ -1,6 +1,6 @@
 {
   "name": "เช็คชั้นวาง",
-  "short_name": "สแกนสต๊อก",
+  "short_name": "scan stock",
   "description": "ระบบเช็คสต๊อกชั้นวางด้วยบาร์โค้ด",
   "start_url": "/mobile-csv-scanner/index.html",
   "scope": "/mobile-csv-scanner/",

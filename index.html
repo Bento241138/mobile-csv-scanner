@@ -444,7 +444,7 @@ async function saveData(){
         });
       }
       console.log('IDB saved:',data.length);
-      return; // สำเร็จ ออกได้เลย
+      return;
     }catch(e){
       console.warn('IDB save attempt '+attempt+':',e);
       if(attempt<MAX_RETRY) await new Promise(r=>setTimeout(r,RETRY_DELAY*attempt));
@@ -455,18 +455,27 @@ async function saveData(){
 async function loadData(){
   try{
     const d=await openDB();
-    const tx=d.transaction(STORE,'readonly');
-    const req=tx.objectStore(STORE).getAll();
-    req.onsuccess=async()=>{
-      data=req.result||[];
-      if(!data.length)return;
-      await buildIndex();
-      document.getElementById('ndo').classList.remove('show');
-      setText('dataInfo',data.length.toLocaleString()+' รายการ (โหลดจากที่บันทึกไว้)');
-      setCsvSt('ok','✔ โหลดข้อมูล '+data.length.toLocaleString()+' รายการจากที่บันทึกไว้');
-      renderList();
-      showToast('tok','💾','โหลดข้อมูลเดิม '+data.length.toLocaleString()+' รายการแล้ว');
-    };
+    // ใช้ cursor แทน getAll() เพื่อรองรับข้อมูลจำนวนมาก (getAll ติด memory limit)
+    const loaded=await new Promise((res,rej)=>{
+      const tx=d.transaction(STORE,'readonly');
+      const st=tx.objectStore(STORE);
+      const result=[];
+      const req=st.openCursor();
+      req.onsuccess=e=>{
+        const cursor=e.target.result;
+        if(cursor){result.push(cursor.value);cursor.continue();}
+        else res(result);
+      };
+      req.onerror=rej;
+    });
+    data=loaded;
+    if(!data.length)return;
+    await buildIndex();
+    document.getElementById('ndo').classList.remove('show');
+    setText('dataInfo',data.length.toLocaleString()+' รายการ (โหลดจากที่บันทึกไว้)');
+    setCsvSt('ok','✔ โหลดข้อมูล '+data.length.toLocaleString()+' รายการจากที่บันทึกไว้');
+    renderList();
+    showToast('tok','💾','โหลดข้อมูลเดิม '+data.length.toLocaleString()+' รายการแล้ว');
   }catch(e){console.warn('IDB load:',e);}
 }
 async function clearDB(){

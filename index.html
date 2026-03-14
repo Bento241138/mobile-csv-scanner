@@ -421,28 +421,36 @@ function openDB(){
   });
 }
 async function saveData(){
-  try{
-    const d=await openDB();
-    // clear ก่อนใน transaction แยก
-    await new Promise((res,rej)=>{
-      const tx=d.transaction(STORE,'readwrite');
-      tx.objectStore(STORE).clear();
-      tx.oncomplete=res;tx.onerror=rej;
-    });
-    // เขียน batch ละ 500 แถว แต่ละ batch เป็น transaction ใหม่
-    // ป้องกัน timeout และไม่ค้าง UI
-    const BATCH=500;
-    for(let i=0;i<data.length;i+=BATCH){
-      const batch=data.slice(i,i+BATCH);
+  const MAX_RETRY=3,RETRY_DELAY=500;
+  for(let attempt=1;attempt<=MAX_RETRY;attempt++){
+    try{
+      const d=await openDB();
+      // clear ก่อนใน transaction แยก
       await new Promise((res,rej)=>{
         const tx=d.transaction(STORE,'readwrite');
-        const st=tx.objectStore(STORE);
-        for(const item of batch) st.put(item);
+        tx.objectStore(STORE).clear();
         tx.oncomplete=res;tx.onerror=rej;
       });
+      // เขียน batch ละ 500 แถว แต่ละ batch เป็น transaction ใหม่
+      // ป้องกัน timeout และไม่ค้าง UI
+      const BATCH=500;
+      for(let i=0;i<data.length;i+=BATCH){
+        const batch=data.slice(i,i+BATCH);
+        await new Promise((res,rej)=>{
+          const tx=d.transaction(STORE,'readwrite');
+          const st=tx.objectStore(STORE);
+          for(const item of batch) st.put(item);
+          tx.oncomplete=res;tx.onerror=rej;
+        });
+      }
+      console.log('IDB saved:',data.length);
+      return; // สำเร็จ ออกได้เลย
+    }catch(e){
+      console.warn('IDB save attempt '+attempt+':',e);
+      if(attempt<MAX_RETRY) await new Promise(r=>setTimeout(r,RETRY_DELAY*attempt));
+      else console.error('IDB save failed after '+MAX_RETRY+' attempts');
     }
-    console.log('IDB saved:',data.length);
-  }catch(e){console.warn('IDB save:',e);}
+  }
 }
 async function loadData(){
   try{

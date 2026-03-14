@@ -643,9 +643,18 @@ function handleFile(f){
   if(!f)return;
   const r=new FileReader();
   r.onload=e=>{
-    const t=e.target.result;
+    let t=e.target.result;
+    // ลบ BOM ถ้ามี (Google Sheets มักมี BOM นำหน้า)
+    if(t.charCodeAt(0)===0xFEFF) t=t.slice(1);
+    // ถ้ามีตัวอักษรเสีย → ลอง TIS-620
     if(t.includes('\uFFFD')||t.includes('???')){
-      const r2=new FileReader();r2.onload=ev=>parseCSV(ev.target.result,f.name);r2.readAsText(f,'TIS-620');return;
+      const r2=new FileReader();
+      r2.onload=ev=>{
+        let t2=ev.target.result;
+        if(t2.charCodeAt(0)===0xFEFF) t2=t2.slice(1);
+        parseCSV(t2,f.name);
+      };
+      r2.readAsText(f,'TIS-620');return;
     }
     parseCSV(t,f.name);
   };

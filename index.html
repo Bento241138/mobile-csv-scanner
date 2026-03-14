@@ -163,6 +163,15 @@ select{width:100%;background:var(--bg);border:1px solid var(--border);border-rad
 .act-btn.green{background:#e8f8f0;border:1px solid #a0ddb8;color:var(--green);}
 .act-btn.red{background:#fdf0f0;border:1px solid #f0b8b8;color:var(--red);}
 
+/* ── SAVE OVERLAY ── */
+#saveOverlay{position:fixed;inset:0;background:rgba(0,0,0,.75);z-index:500;display:none;flex-direction:column;align-items:center;justify-content:center;}
+#saveOverlay.show{display:flex;}
+.sov-box{background:var(--card);border-radius:16px;padding:28px 32px;text-align:center;width:280px;}
+.sov-title{font-size:16px;font-weight:700;margin-bottom:6px;}
+.sov-sub{font-size:13px;color:var(--ink2);margin-bottom:16px;}
+.sov-track{background:var(--border);border-radius:99px;height:10px;overflow:hidden;}
+.sov-bar{height:100%;background:var(--accent);border-radius:99px;width:0%;transition:width .15s;}
+.sov-pct{font-family:'JetBrains Mono',monospace;font-size:13px;font-weight:700;margin-top:10px;color:var(--accent);}
 /* ── TOAST ── */
 #toast{position:fixed;top:14px;left:14px;right:14px;background:var(--ink);color:#fff;border-radius:12px;padding:13px 18px;display:flex;align-items:center;gap:10px;font-size:14px;font-weight:500;z-index:999;box-shadow:0 8px 24px rgba(0,0,0,.3);transform:translateY(calc(-100% - 30px));opacity:0;transition:all .3s cubic-bezier(.34,1.4,.64,1);}
 #toast.show{transform:translateY(0);opacity:1;}
@@ -360,6 +369,14 @@ select{width:100%;background:var(--bg);border:1px solid var(--border);border-rad
   <button class="tb"        id="tab-settings" onclick="goTab('settings')"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 010 2.83 2 2 0 01-2.83 0l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83-2.83l.06-.06A1.65 1.65 0 004.68 15a1.65 1.65 0 00-1.51-1H3a2 2 0 010-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 012.83-2.83l.06.06A1.65 1.65 0 009 4.68a1.65 1.65 0 001-1.51V3a2 2 0 014 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 2.83l-.06.06A1.65 1.65 0 0019.4 9a1.65 1.65 0 001.51 1H21a2 2 0 010 4h-.09a1.65 1.65 0 00-1.51 1z"/></svg>ตั้งค่า</button>
 </div>
 <div id="toast"><span id="tI"></span> <span id="tM"></span></div>
+<div id="saveOverlay">
+  <div class="sov-box">
+    <div class="sov-title">💾 กำลังบันทึกข้อมูล</div>
+    <div class="sov-sub" id="sovSub">กรุณารอสักครู่ อย่าปิดแอป</div>
+    <div class="sov-track"><div class="sov-bar" id="sovBar"></div></div>
+    <div class="sov-pct" id="sovPct">0%</div>
+  </div>
+</div>
 
 <script>
 "use strict";
@@ -420,55 +437,63 @@ function openDB(){
     r.onerror=e=>rej(e);
   });
 }
-async function saveData(){
-  const MAX_RETRY=3,RETRY_DELAY=500;
+async function saveData(showOverlay=false){
+  const MAX_RETRY=3,RETRY_DELAY=500,BATCH=5000;
+  const ov=document.getElementById('saveOverlay');
+  const bar=document.getElementById('sovBar');
+  const pct=document.getElementById('sovPct');
+  const sub=document.getElementById('sovSub');
+  if(showOverlay)ov.classList.add('show');
   for(let attempt=1;attempt<=MAX_RETRY;attempt++){
     try{
       const d=await openDB();
-      // clear ก่อนใน transaction แยก
       await new Promise((res,rej)=>{
         const tx=d.transaction(STORE,'readwrite');
         tx.objectStore(STORE).clear();
         tx.oncomplete=res;tx.onerror=rej;
       });
-      // เขียน batch ละ 500 แถว แต่ละ batch เป็น transaction ใหม่
-      // ป้องกัน timeout และไม่ค้าง UI
-      const BATCH=500;
-      for(let i=0;i<data.length;i+=BATCH){
+      const total=data.length;
+      for(let i=0;i<total;i+=BATCH){
         const batch=data.slice(i,i+BATCH);
         await new Promise((res,rej)=>{
           const tx=d.transaction(STORE,'readwrite');
           const st=tx.objectStore(STORE);
-          for(const item of batch) st.put(item);
+          for(const item of batch)st.put(item);
           tx.oncomplete=res;tx.onerror=rej;
         });
+        if(showOverlay){
+          const p=Math.round((Math.min(i+BATCH,total))/total*100);
+          bar.style.width=p+'%';pct.textContent=p+'%';
+          sub.textContent='บันทึกแล้ว '+(Math.min(i+BATCH,total)).toLocaleString()+' / '+total.toLocaleString()+' รายการ';
+        }
       }
       console.log('IDB saved:',data.length);
+      if(showOverlay){ov.classList.remove('show');bar.style.width='0%';}
       return;
     }catch(e){
       console.warn('IDB save attempt '+attempt+':',e);
-      if(attempt<MAX_RETRY) await new Promise(r=>setTimeout(r,RETRY_DELAY*attempt));
-      else console.error('IDB save failed after '+MAX_RETRY+' attempts');
+      if(attempt<MAX_RETRY)await new Promise(r=>setTimeout(r,RETRY_DELAY*attempt));
+      else{if(showOverlay)ov.classList.remove('show');console.error('IDB save failed after '+MAX_RETRY+' attempts');}
     }
   }
 }
 async function loadData(){
   try{
     const d=await openDB();
-    // ใช้ cursor แทน getAll() เพื่อรองรับข้อมูลจำนวนมาก (getAll ติด memory limit)
-    const loaded=await new Promise((res,rej)=>{
+    // โหลดทั้งหมดใน transaction เดียว แต่ใช้ cursor สะสมแบบ sync ใน event loop เดิม
+    // วิธีนี้ไม่ timeout เพราะ cursor.continue() ไม่ปล่อย transaction
+    data=await new Promise((res,rej)=>{
       const tx=d.transaction(STORE,'readonly');
-      const st=tx.objectStore(STORE);
       const result=[];
-      const req=st.openCursor();
+      const req=tx.objectStore(STORE).openCursor();
       req.onsuccess=e=>{
         const cursor=e.target.result;
         if(cursor){result.push(cursor.value);cursor.continue();}
         else res(result);
       };
       req.onerror=rej;
+      tx.onerror=rej;
     });
-    data=loaded;
     if(!data.length)return;
     await buildIndex();
     document.getElementById('ndo').classList.remove('show');
@@ -729,7 +754,7 @@ async function confirmMap(){
   setText('dataInfo',data.length.toLocaleString()+' รายการในระบบ');
   await buildIndex();
   renderList();
-  saveData();
+  await saveData(true);
   showToast('tok','✅','โหลด '+data.length.toLocaleString()+' รายการแล้ว');
   goTab('scan');
 }

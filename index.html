@@ -170,7 +170,7 @@ select{width:100%;background:var(--bg);border:1px solid var(--border);border-rad
 .sov-title{font-size:16px;font-weight:700;margin-bottom:6px;}
 .sov-sub{font-size:13px;color:var(--ink2);margin-bottom:16px;}
 .sov-track{background:var(--border);border-radius:99px;height:10px;overflow:hidden;}
-.sov-bar{height:100%;background:var(--accent);border-radius:99px;width:0%;transition:width .15s;}
+.sov-bar{height:100%;background:var(--accent);border-radius:99px;width:0%;transition:width .3s;}
 .sov-pct{font-family:'JetBrains Mono',monospace;font-size:13px;font-weight:700;margin-top:10px;color:var(--accent);}
 /* ── TOAST ── */
 #toast{position:fixed;top:14px;left:14px;right:14px;background:var(--ink);color:#fff;border-radius:12px;padding:13px 18px;display:flex;align-items:center;gap:10px;font-size:14px;font-weight:500;z-index:999;box-shadow:0 8px 24px rgba(0,0,0,.3);transform:translateY(calc(-100% - 30px));opacity:0;transition:all .3s cubic-bezier(.34,1.4,.64,1);}
@@ -421,8 +421,10 @@ function playSound(type){
   if(type==='out')     {[0,.22,.44,.66,.88].forEach((t,i)=>beep(i%2?350:660,t,.18,'square',0.95));}
 }
 
-// ── INDEXEDDB ──
-const DB_NAME='stockDB',DB_VER=1,STORE='items';
+// ── INDEXEDDB (compressed blob) ──
+// เก็บข้อมูลเป็น blob เดียวหลัง compress ด้วย gzip
+// ลด size 60-80% ผ่าน Chrome quota ได้
+const DB_NAME='stockDB',DB_VER=2,STORE='blob';
 let db=null;
 function openDB(){
   return new Promise((res,rej)=>{
@@ -430,70 +432,88 @@ function openDB(){
     const r=indexedDB.open(DB_NAME,DB_VER);
     r.onupgradeneeded=e=>{
       const d=e.target.result;
+      // ลบ store เก่า (record-based) ถ้ามี
+      if(d.objectStoreNames.contains('items'))d.deleteObjectStore('items');
       if(!d.objectStoreNames.contains(STORE))
-        d.createObjectStore(STORE,{keyPath:'barcode'});
+        d.createObjectStore(STORE);
     };
     r.onsuccess=e=>{db=e.target.result;res(db);};
     r.onerror=e=>rej(e);
   });
 }
+async function compress(str){
+  const enc=new TextEncoder().encode(str);
+  const cs=new CompressionStream('gzip');
+  const w=cs.writable.getWriter();
+  w.write(enc);w.close();
+  const chunks=[];
+  const reader=cs.readable.getReader();
+  while(true){const{done,value}=await reader.read();if(done)break;chunks.push(value);}
+  const total=chunks.reduce((a,c)=>a+c.length,0);
+  const out=new Uint8Array(total);
+  let offset=0;for(const c of chunks){out.set(c,offset);offset+=c.length;}
+  return out;
+}
+async function decompress(buf){
+  const ds=new DecompressionStream('gzip');
+  const w=ds.writable.getWriter();
+  w.write(buf);w.close();
+  const chunks=[];
+  const reader=ds.readable.getReader();
+  while(true){const{done,value}=await reader.read();if(done)break;chunks.push(value);}
+  const total=chunks.reduce((a,c)=>a+c.length,0);
+  const out=new Uint8Array(total);
+  let offset=0;for(const c of chunks){out.set(c,offset);offset+=c.length;}
+  return new TextDecoder().decode(out);
+}
 async function saveData(showOverlay=false){
-  const MAX_RETRY=3,RETRY_DELAY=500,BATCH=5000;
   const ov=document.getElementById('saveOverlay');
   const bar=document.getElementById('sovBar');
   const pct=document.getElementById('sovPct');
   const sub=document.getElementById('sovSub');
-  if(showOverlay)ov.classList.add('show');
-  for(let attempt=1;attempt<=MAX_RETRY;attempt++){
-    try{
-      const d=await openDB();
-      await new Promise((res,rej)=>{
-        const tx=d.transaction(STORE,'readwrite');
-        tx.objectStore(STORE).clear();
-        tx.oncomplete=res;tx.onerror=rej;
-      });
-      const total=data.length;
-      for(let i=0;i<total;i+=BATCH){
-        const batch=data.slice(i,i+BATCH);
-        await new Promise((res,rej)=>{
-          const tx=d.transaction(STORE,'readwrite');
-          const st=tx.objectStore(STORE);
-          for(const item of batch)st.put(item);
-          tx.oncomplete=res;tx.onerror=rej;
-        });
-        if(showOverlay){
-          const p=Math.round((Math.min(i+BATCH,total))/total*100);
-          bar.style.width=p+'%';pct.textContent=p+'%';
-          sub.textContent='บันทึกแล้ว '+(Math.min(i+BATCH,total)).toLocaleString()+' / '+total.toLocaleString()+' รายการ';
-        }
-      }
-      console.log('IDB saved:',data.length);
-      if(showOverlay){ov.classList.remove('show');bar.style.width='0%';}
-      return;
-    }catch(e){
-      console.warn('IDB save attempt '+attempt+':',e);
-      if(attempt<MAX_RETRY)await new Promise(r=>setTimeout(r,RETRY_DELAY*attempt));
-      else{if(showOverlay)ov.classList.remove('show');console.error('IDB save failed after '+MAX_RETRY+' attempts');}
-    }
+  if(showOverlay){ov.classList.add('show');bar.style.width='10%';pct.textContent='10%';sub.textContent='กำลัง compress ข้อมูล...';}
+  try{
+    const json=JSON.stringify(data);
+    if(showOverlay){bar.style.width='40%';pct.textContent='40%';sub.textContent='กำลัง compress ข้อมูล...';}
+    const blob=await compress(json);
+    if(showOverlay){bar.style.width='70%';pct.textContent='70%';sub.textContent='กำลังบันทึกลงเครื่อง...';}
+    const d=await openDB();
+    // safe swap: เขียนลง key 'pending' ก่อน แล้วค่อย swap เป็น 'data'
+    // ถ้า crash กลางคัน ของเก่าใน 'data' ยังอยู่ครบ
+    await new Promise((res,rej)=>{
+      const tx=d.transaction(STORE,'readwrite');
+      const st=tx.objectStore(STORE);
+      st.put(blob,'pending');
+      tx.oncomplete=res;tx.onerror=rej;
+    });
+    await new Promise((res,rej)=>{
+      const tx=d.transaction(STORE,'readwrite');
+      const st=tx.objectStore(STORE);
+      st.put(blob,'data');
+      st.delete('pending');
+      tx.oncomplete=res;tx.onerror=rej;
+    });
+    if(showOverlay){bar.style.width='100%';pct.textContent='100%';sub.textContent='บันทึกเสร็จแล้ว ✅';}
+    console.log('IDB saved (compressed):',data.length,'rows,',blob.length,'bytes');
+    await new Promise(r=>setTimeout(r,600));
+    if(showOverlay){ov.classList.remove('show');bar.style.width='0%';}
+  }catch(e){
+    if(showOverlay)ov.classList.remove('show');
+    console.warn('IDB save:',e);
   }
 }
 async function loadData(){
   try{
     const d=await openDB();
-    // โหลดทั้งหมดใน transaction เดียว แต่ใช้ cursor สะสมแบบ sync ใน event loop เดิม
-    // วิธีนี้ไม่ timeout เพราะ cursor.continue() ไม่ปล่อย transaction
-    data=await new Promise((res,rej)=>{
+    const blob=await new Promise((res,rej)=>{
       const tx=d.transaction(STORE,'readonly');
-      const result=[];
-      const req=tx.objectStore(STORE).openCursor();
-      req.onsuccess=e=>{
-        const cursor=e.target.result;
-        if(cursor){result.push(cursor.value);cursor.continue();}
-        else res(result);
-      };
+      const req=tx.objectStore(STORE).get('data');
+      req.onsuccess=()=>res(req.result||null);
       req.onerror=rej;
-      tx.onerror=rej;
     });
+    if(!blob)return;
+    const json=await decompress(blob);
+    data=JSON.parse(json);
     if(!data.length)return;
     await buildIndex();
     document.getElementById('ndo').classList.remove('show');
@@ -506,9 +526,11 @@ async function loadData(){
 async function clearDB(){
   try{
     const d=await openDB();
-    const tx=d.transaction(STORE,'readwrite');
-    tx.objectStore(STORE).clear();
-    await new Promise((res,rej)=>{tx.oncomplete=res;tx.onerror=rej;});
+    await new Promise((res,rej)=>{
+      const tx=d.transaction(STORE,'readwrite');
+      tx.objectStore(STORE).clear();
+      tx.oncomplete=res;tx.onerror=rej;
+    });
   }catch(e){console.warn('IDB clear:',e);}
 }
 

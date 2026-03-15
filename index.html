@@ -163,6 +163,14 @@ select{width:100%;background:var(--bg);border:1px solid var(--border);border-rad
 .act-btn.green{background:#e8f8f0;border:1px solid #a0ddb8;color:var(--green);}
 .act-btn.red{background:#fdf0f0;border:1px solid #f0b8b8;color:var(--red);}
 
+/* ── SHELF CHECK BAR ── */
+.shelf-bar{display:none;align-items:center;gap:10px;padding:8px 14px;background:#fff8f0;border-bottom:2px solid var(--accent);flex-shrink:0;}
+.shelf-bar.show{display:flex;}
+.shelf-bar-label{font-size:12px;color:var(--ink2);font-weight:600;white-space:nowrap;}
+.shelf-bar-val{font-family:'JetBrains Mono',monospace;font-size:18px;font-weight:700;color:var(--accent);flex:1;}
+.shelf-bar-val.none{font-size:13px;color:var(--ink2);font-weight:600;}
+.shelf-reset{background:transparent;border:1px solid var(--border);border-radius:8px;padding:5px 10px;font-size:12px;font-weight:700;cursor:pointer;color:var(--ink2);font-family:'Sarabun',sans-serif;white-space:nowrap;}
+.rs-status.wrong{color:#ff4500;}
 /* ── SAVE OVERLAY ── */
 #saveOverlay{position:fixed;inset:0;background:rgba(0,0,0,.75);z-index:500;display:none;flex-direction:column;align-items:center;justify-content:center;}
 #saveOverlay.show{display:flex;}
@@ -188,6 +196,13 @@ select{width:100%;background:var(--bg);border:1px solid var(--border);border-rad
     <button class="mode-btn active" id="mBtn-hand" onclick="setMode('hand')"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0110 0v4"/></svg> พิมพ์มือ</button>
     <button class="mode-btn"        id="mBtn-gun"  onclick="setMode('gun')"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M3 8h12l2 4H3z"/><path d="M15 10h2l2-2h2"/><line x1="7" y1="12" x2="7" y2="16"/><path d="M5 16h6l1 3H4z"/></svg> ปืนสแกน</button>
     <button class="mode-btn"        id="mBtn-cam"  onclick="setMode('cam')"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M23 19a2 2 0 01-2 2H3a2 2 0 01-2-2V8a2 2 0 012-2h4l2-3h6l2 3h4a2 2 0 012 2z"/><circle cx="12" cy="13" r="4"/></svg> กล้อง</button>
+  </div>
+
+  <!-- SHELF CHECK BAR -->
+  <div class="shelf-bar" id="shelfBar">
+    <div class="shelf-bar-label">📍 ชั้น:</div>
+    <div class="shelf-bar-val none" id="shelfBarVal">ยังไม่ได้สแกนป้ายชั้น</div>
+    <button class="shelf-reset" onclick="resetShelf()">✕ รีเซ็ต</button>
   </div>
 
   <!-- HAND -->
@@ -308,6 +323,7 @@ select{width:100%;background:var(--bg);border:1px solid var(--border);border-rad
         <div class="mr"><div class="ml">Box / ที่วาง *</div><select id="mBX"></select></div>
         <div class="mr"><div class="ml">ชื่อสินค้า *</div><select id="mNM"></select></div>
         <div class="mr"><div class="ml">จำนวน (ถ้ามี)</div><select id="mQT"></select></div>
+        <div class="mr"><div class="ml">รหัสสินค้า (ถ้ามี)</div><select id="mSK"></select></div>
         <button class="big-btn" onclick="confirmMap()">✔ โหลดข้อมูล</button>
       </div>
     </div>
@@ -318,7 +334,7 @@ select{width:100%;background:var(--bg);border:1px solid var(--border);border-rad
     <div class="info-box">
       <strong>รูปแบบ CSV:</strong><br>
       คอลัมน์ต้องมี: <strong>บาร์โค้ด, Box, ชื่อสินค้า</strong><br>
-      คอลัมน์เสริม: จำนวน / สต๊อก<br>
+      คอลัมน์เสริม: จำนวน / สต๊อก, รหัสสินค้า<br>
       ตัวคั่น: , (comma) หรือ Tab
     </div>
   </div>
@@ -328,6 +344,10 @@ select{width:100%;background:var(--bg);border:1px solid var(--border);border-rad
 <div class="screen" id="scr-settings">
   <div class="set-wrap">
     <div class="set-card">
+      <div class="set-row">
+        <div class="set-info"><div class="set-lbl">📍 เช็คชั้นวาง</div><div class="set-sub">สแกนป้ายชั้นก่อน แล้วค่อยสแกนสินค้า</div></div>
+        <label class="toggle"><input type="checkbox" id="shelfTog" onchange="toggleShelfMode(this.checked)"><div class="ttrack"><div class="tthumb"></div></div></label>
+      </div>
       <div class="set-row">
         <div class="set-info"><div class="set-lbl">🔊 เสียงแจ้งเตือน</div></div>
         <label class="toggle"><input type="checkbox" id="sndTog" checked onchange="soundOn=this.checked"><div class="ttrack"><div class="tthumb"></div></div></label>
@@ -399,6 +419,7 @@ let soundOn=true,scanCount=0,curFilter='all',lastHL=null;
 let html5QrCode=null,camRunning=false,torchOn=false,scanCooldown=false;
 let curMode='hand',toastT,renderRAF=null,searchDebounce=null;
 let scanLog=[];
+let shelfMode=false,currentBox=null;
 
 if('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').catch(()=>{});
 
@@ -419,6 +440,32 @@ function playSound(type){
   if(type==='notfound'){beep(300,0,.08,'square',0.95);beep(150,.10,.25,'square',0.95);}
   if(type==='low')     {[0,.20,.40].forEach(t=>beep(880,t,.15,'square',0.85));}
   if(type==='out')     {[0,.22,.44,.66,.88].forEach((t,i)=>beep(i%2?350:660,t,.18,'square',0.95));}
+  if(type==='wrong')   {beep(440,0,.08,'square',0.9);beep(330,.10,.08,'square',0.9);beep(220,.20,.25,'square',0.95);}
+  if(type==='shelf')   {beep(660,0,.08,'sine',0.8);beep(880,.10,.15,'sine',0.8);}
+}
+
+// ── SHELF CHECK ──
+function toggleShelfMode(on){
+  shelfMode=on;
+  if(!on){currentBox=null;}
+  document.getElementById('shelfBar').classList.toggle('show',on);
+  updateShelfBar();
+}
+function updateShelfBar(){
+  const val=document.getElementById('shelfBarVal');
+  if(!shelfMode)return;
+  if(currentBox){
+    val.className='shelf-bar-val';
+    val.textContent=currentBox;
+  }else{
+    val.className='shelf-bar-val none';
+    val.textContent='ยังไม่ได้สแกนป้ายชั้น';
+  }
+}
+function resetShelf(){
+  currentBox=null;
+  updateShelfBar();
+  showToast('twrn','📍','รีเซ็ตชั้นแล้ว — สแกนป้ายชั้นใหม่');
 }
 
 // ── INDEXEDDB (compressed blob) ──
@@ -543,7 +590,7 @@ async function buildIndex(){
     const chunk=data.slice(i,i+BATCH);
     for(const item of chunk){
       barcodeIndex.set(item.barcode,item);
-      searchIndex.push({lc:(item.name+' '+item.barcode+' '+item.box).toLowerCase(),item});
+      searchIndex.push({lc:(item.name+' '+item.barcode+' '+item.box+' '+(item.sku||'')).toLowerCase(),item});
     }
     await new Promise(r=>setTimeout(r,0));
   }
@@ -655,18 +702,45 @@ function doScan(code){
   if(!code||!code.trim())return;
   code=code.trim();
   if(data.length===0){document.getElementById('ndo').classList.add('show');playSound('notfound');return;}
+
+  // ── SHELF MODE: ถ้า barcode ไม่พบในสินค้า → ถือว่าเป็นป้ายชั้น
+  if(shelfMode&&!barcodeIndex.get(code)){
+    currentBox=code;
+    updateShelfBar();
+    playSound('shelf');
+    showToast('tok','📍','ล็อคชั้น: '+code);
+    document.getElementById('scanIdle').style.display='none';
+    document.getElementById('scanResult').style.display='block';
+    document.getElementById('rsStatus').className='rs-status ok';
+    setText('rsStatus','📍 ล็อคชั้นแล้ว');
+    setText('rsName','ชั้น: '+code);
+    setText('rsCode','สแกนสินค้าได้เลย');
+    document.getElementById('rsChips').textContent='';
+    return;
+  }
+
+  // ── SHELF MODE: สแกนสินค้าโดยยังไม่ได้ lock ชั้น → เตือน
+  if(shelfMode&&!currentBox){
+    showToast('twrn','⚠️','สแกนป้ายชั้นก่อน แล้วค่อยสแกนสินค้า');
+    playSound('notfound');
+    return;
+  }
+
   scanCount++;setText('scanCnt',scanCount);
   const thr=parseInt(document.getElementById('thr').value)||5;
-  const item=barcodeIndex.get(code); // O(1)
+  const item=barcodeIndex.get(code);
   document.getElementById('scanIdle').style.display='none';
   document.getElementById('scanResult').style.display='block';
 
   // บันทึก log
+  const wrongShelf=shelfMode&&currentBox&&item&&item.box!==currentBox;
   scanLog.push({
     time:new Date().toLocaleString('th-TH'),barcode:code,
     name:item?item.name:'—',box:item?item.box:'—',
+    sku:item?(item.sku||'—'):'—',
     qty:item?(item.qty!==null?item.qty:'—'):'—',
-    status:item?(item.qty===0?'หมดสต๊อก':item.qty!==null&&item.qty<=thr?'ใกล้หมด':'พบ'):'ไม่พบ'
+    status:item?(wrongShelf?'ผิดชั้น':item.qty===0?'หมดสต๊อก':item.qty!==null&&item.qty<=thr?'ใกล้หมด':'พบ'):'ไม่พบ',
+    scannedAt:shelfMode&&currentBox?currentBox:'—'
   });
 
   if(!item){
@@ -679,6 +753,27 @@ function doScan(code){
     showToast('terr','❌','ไม่พบ: '+code);
     return;
   }
+
+  // ── ผิดชั้น ──
+  if(wrongShelf){
+    playSound('wrong');
+    document.getElementById('rsStatus').className='rs-status wrong';
+    setText('rsStatus','🚨 วางผิดชั้น!');
+    setText('rsName',item.name);
+    setText('rsCode',item.barcode);
+    const chips=document.getElementById('rsChips');
+    chips.textContent='';
+    const makeChip=(val,lbl,vc)=>{
+      const c=mkEl('div','chip'),v=mkEl('div','chip-v '+vc),l=mkEl('div','chip-l');
+      v.textContent=val;l.textContent=lbl;c.append(v,l);return c;
+    };
+    chips.appendChild(makeChip(currentBox,'พบที่ชั้น','rd'));
+    chips.appendChild(makeChip(item.box,'ควรอยู่ชั้น','gn'));
+    showToast('terr','🚨','"'+item.name+'" ควรอยู่ชั้น '+item.box);
+    lastHL=item.barcode;
+    return;
+  }
+
   const hq=item.qty!==null,qty=item.qty;
   let cls,txt,snd;
   if(!hq)         {cls='ok'; txt='✔ พบสินค้า';   snd='found';}
@@ -695,6 +790,7 @@ function doScan(code){
     v.textContent=val;l.textContent=lbl;c.append(v,l);return c;
   };
   chips.appendChild(makeChip(item.box||'—','Box/ชั้น','ac'));
+  if(item.sku){chips.appendChild(makeChip(item.sku,'รหัสสินค้า','ac'));}
   if(hq){const qc=qty===0?'rd':qty<=thr?'yw':'gn';chips.appendChild(makeChip(qty,'คงเหลือ',qc));}
   if(snd==='out')showToast('terr','🚨','"'+item.name+'" หมดสต๊อก!');
   else if(snd==='low')showToast('twrn','⚠️','"'+item.name+'" เหลือ '+qty+' ชิ้น');
@@ -736,11 +832,11 @@ function parseCSV(text,name){
 }
 function setCsvSt(t,m){const e=document.getElementById('csvStat');e.className='csv-stat '+t;e.textContent=m;}
 function buildMapUI(){
-  const ids=['mBC','mBX','mNM','mQT'];
-  const kw=[['barcode','บาร์โค้ด','code','รหัส'],['box','ชั้น','ตำแหน่ง'],['name','ชื่อ','product','สินค้า'],['qty','จำนวน','stock','คง','เหลือ']];
+  const ids=['mBC','mBX','mNM','mQT','mSK'];
+  const kw=[['barcode','บาร์โค้ด','code','รหัสบาร์'],['box','ชั้น','ตำแหน่ง'],['name','ชื่อ','product','สินค้า'],['qty','จำนวน','stock','คง','เหลือ'],['sku','รหัสสินค้า','item','article','part']];
   ids.forEach((id,i)=>{
     const s=document.getElementById(id);s.textContent='';
-    if(i===3){const o=document.createElement('option');o.value='';o.textContent='— ไม่มี —';s.appendChild(o);}
+    if(i>=3){const o=document.createElement('option');o.value='';o.textContent='— ไม่มี —';s.appendChild(o);}
     headers.forEach(h=>{const o=document.createElement('option');o.value=h;o.textContent=h;s.appendChild(o);});
     const hl=headers.map(h=>h.toLowerCase());
     const mi=hl.findIndex(h=>kw[i].some(k=>h.includes(k)));
@@ -750,11 +846,12 @@ function buildMapUI(){
 }
 async function confirmMap(){
   const bc=document.getElementById('mBC').value,bx=document.getElementById('mBX').value,
-        nm=document.getElementById('mNM').value,qt=document.getElementById('mQT').value;
+        nm=document.getElementById('mNM').value,qt=document.getElementById('mQT').value,
+        sk=document.getElementById('mSK').value;
   if(!bc||!bx||!nm){showToast('twrn','⚠️','เลือกคอลัมน์ที่จำเป็นก่อน');return;}
   const mapped=rawRows.map(row=>{
     const o={};headers.forEach((h,i)=>o[h]=(row[i]||'').trim());
-    return{barcode:(o[bc]||'').trim(),box:(o[bx]||'').trim(),name:(o[nm]||'').trim(),qty:qt?(parseInt(o[qt])||0):null};
+    return{barcode:(o[bc]||'').trim(),box:(o[bx]||'').trim(),name:(o[nm]||'').trim(),qty:qt?(parseInt(o[qt])||0):null,sku:sk?(o[sk]||'').trim():''};
   }).filter(r=>r.barcode);
   document.getElementById('mapCard').style.display='none';
   // batch import + progress
@@ -784,8 +881,8 @@ async function confirmMap(){
 // ── EXPORT CSV ──
 function exportCSV(){
   if(!scanLog.length){showToast('twrn','⚠️','ยังไม่มีประวัติการสแกน');return;}
-  const hdr='เวลา,บาร์โค้ด,ชื่อสินค้า,Box/ชั้น,จำนวน,สถานะ';
-  const rows=scanLog.map(r=>['"'+r.time+'"','"'+r.barcode+'"','"'+r.name+'"','"'+r.box+'"','"'+r.qty+'"','"'+r.status+'"'].join(','));
+  const hdr='เวลา,บาร์โค้ด,รหัสสินค้า,ชื่อสินค้า,Box/ชั้น,สแกนที่ชั้น,จำนวน,สถานะ';
+  const rows=scanLog.map(r=>['"'+r.time+'"','"'+r.barcode+'"','"'+(r.sku||'—')+'"','"'+r.name+'"','"'+r.box+'"','"'+(r.scannedAt||'—')+'"','"'+r.qty+'"','"'+r.status+'"'].join(','));
   const csv='\uFEFF'+hdr+'\n'+rows.join('\n');
   const blob=new Blob([csv],{type:'text/csv;charset=utf-8'});
   const url=URL.createObjectURL(blob);
@@ -837,7 +934,7 @@ function renderList(){
     const box=mkEl('div','item-box');box.textContent=item.box||'?';
     const info=mkEl('div','item-info');
     const nm=mkEl('div','item-name');nm.textContent=item.name;
-    const cd=mkEl('div','item-code');cd.textContent=item.barcode;
+    const cd=mkEl('div','item-code');cd.textContent=item.barcode+(item.sku?' · '+item.sku:'');
     info.append(nm,cd);
     const right=mkEl('div','item-right');
     const qty=mkEl('div','item-qty');qty.style.color=!hq?'var(--ink2)':qc;qty.textContent=hq?item.qty:'—';

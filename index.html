@@ -350,11 +350,11 @@ select{width:100%;background:var(--bg);border:1px solid var(--border);border-rad
       </div>
       <div class="set-row">
         <div class="set-info"><div class="set-lbl">🔊 เสียงแจ้งเตือน</div></div>
-        <label class="toggle"><input type="checkbox" id="sndTog" checked onchange="soundOn=this.checked"><div class="ttrack"><div class="tthumb"></div></div></label>
+        <label class="toggle"><input type="checkbox" id="sndTog" checked onchange="soundOn=this.checked;localStorage.setItem('soundOn',this.checked?'1':'0')"><div class="ttrack"><div class="tthumb"></div></div></label>
       </div>
       <div class="set-row">
         <div class="set-info"><div class="set-lbl">⚠️ แจ้งเตือนเมื่อเหลือน้อยกว่า</div><div class="set-sub">ชิ้น</div></div>
-        <input class="num-input" type="number" id="thr" value="5" min="1" onchange="scheduleRender()">
+        <input class="num-input" type="number" id="thr" value="5" min="1" onchange="localStorage.setItem('thr',this.value);scheduleRender()">
       </div>
       <div class="set-row">
         <div class="set-info"><div class="set-lbl">📊 รายการในระบบ</div><div class="set-sub" id="dataInfo">ยังไม่มีข้อมูล</div></div>
@@ -447,6 +447,7 @@ function playSound(type){
 // ── SHELF CHECK ──
 function toggleShelfMode(on){
   shelfMode=on;
+  localStorage.setItem('shelfMode',on?'1':'0');
   if(!on){currentBox=null;}
   document.getElementById('shelfBar').classList.toggle('show',on);
   updateShelfBar();
@@ -991,6 +992,23 @@ if(/iPad|iPhone|iPod/.test(navigator.userAgent))
 // ── INIT ──
 loadData();
 setMode('hand');
+// restore settings
+const _sm=localStorage.getItem('shelfMode');
+if(_sm==='1'){
+  shelfMode=true;
+  document.getElementById('shelfTog').checked=true;
+  document.getElementById('shelfBar').classList.add('show');
+  updateShelfBar();
+}
+const _snd=localStorage.getItem('soundOn');
+if(_snd==='0'){
+  soundOn=false;
+  document.getElementById('sndTog').checked=false;
+}
+const _thr=localStorage.getItem('thr');
+if(_thr){
+  document.getElementById('thr').value=_thr;
+}
 </script>
 </body>
 </html>

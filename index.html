@@ -182,6 +182,18 @@ select{width:100%;background:var(--bg);border:1px solid var(--border);border-rad
 .wd-export-btn{flex:1;padding:13px;background:var(--green);color:#fff;border:none;border-radius:12px;font-family:'Sarabun',sans-serif;font-size:15px;font-weight:700;cursor:pointer;}
 .wd-clear-btn{padding:13px 18px;background:var(--bg);border:1px solid var(--border);border-radius:12px;font-family:'Sarabun',sans-serif;font-size:15px;font-weight:700;cursor:pointer;color:var(--red);}
 .rs-status.wd{color:var(--accent);}
+/* ── IMPORT VALIDATION ── */
+.val-card{margin:0 0 12px;border-radius:var(--r);overflow:hidden;border:1px solid var(--border);}
+.val-card.ok{border-color:#a0ddb8;background:#e8f8f0;}
+.val-card.warn{border-color:#f0c070;background:#fffbf0;}
+.val-card.err{border-color:#f0b8b8;background:#fdf0f0;}
+.val-head{padding:12px 16px;font-size:14px;font-weight:700;display:flex;align-items:center;justify-content:space-between;cursor:pointer;}
+.val-head.ok{color:var(--green);}.val-head.warn{color:#b87800;}.val-head.err{color:var(--red);}
+.val-body{padding:0 16px 12px;font-size:12px;color:var(--ink2);display:none;max-height:200px;overflow-y:auto;}
+.val-body.show{display:block;}
+.val-row{padding:4px 0;border-bottom:1px solid var(--border);font-family:'JetBrains Mono',monospace;}
+.val-row:last-child{border-bottom:none;}
+.val-export{display:block;width:100%;margin-top:8px;padding:8px;background:var(--bg);border:1px solid var(--border);border-radius:8px;font-family:'Sarabun',sans-serif;font-size:12px;font-weight:700;cursor:pointer;text-align:center;}
 /* ── SHELF CHECK BAR ── */
 .shelf-bar{display:none;align-items:center;gap:10px;padding:8px 14px;background:#fff8f0;border-bottom:2px solid var(--accent);flex-shrink:0;}
 .shelf-bar.show{display:flex;}
@@ -350,6 +362,7 @@ select{width:100%;background:var(--bg);border:1px solid var(--border);border-rad
       <div id="importTxt">กำลังโหลด...</div>
       <div id="importTrack"><div id="importBar"></div></div>
     </div>
+    <div id="valSummary" style="display:none;padding:0 0 4px;"></div>
     <div class="info-box">
       <strong>รูปแบบ CSV:</strong><br>
       คอลัมน์ต้องมี: <strong>บาร์โค้ด, Box, ชื่อสินค้า</strong><br>
@@ -570,18 +583,23 @@ let db=null;
 let _saveLogTimer={};
 function saveLog(key,arr){
   // debounce 800ms ป้องกัน rapid scan overlap transactions
+  // หมายเหตุ: arr เป็น reference ของ array จริง (scanLog/withdrawLog)
+  // ถ้าสแกนเร็วต่อเนื่อง debounce จะ save array ล่าสุดเสมอ — ถูกต้องตามต้องการ
   clearTimeout(_saveLogTimer[key]);
-  _saveLogTimer[key]=setTimeout(async()=>{
-    try{
-      const d=await openDB();
-      const blob=await compress(JSON.stringify(arr));
-      await new Promise((res,rej)=>{
-        const tx=d.transaction(STORE,'readwrite');
-        tx.objectStore(STORE).put(blob,key);
-        tx.oncomplete=res;tx.onerror=rej;
-      });
-    }catch(e){console.warn('IDB saveLog:',e);}
-  },800);
+  _saveLogTimer[key]=setTimeout(()=>saveLogNow(key,arr),800);
+}
+async function saveLogNow(key,arr){
+  // save ทันทีไม่มี debounce — ใช้ตอน clear
+  clearTimeout(_saveLogTimer[key]);
+  try{
+    const d=await openDB();
+    const blob=await compress(JSON.stringify(arr));
+    await new Promise((res,rej)=>{
+      const tx=d.transaction(STORE,'readwrite');
+      tx.objectStore(STORE).put(blob,key);
+      tx.oncomplete=res;tx.onerror=rej;
+    });
+  }catch(e){console.warn('IDB saveLog:',e);}
 }
 function openDB(){
   return new Promise((res,rej)=>{
@@ -691,17 +709,6 @@ async function clearDB(){
   }catch(e){console.warn('IDB clear:',e);}
 }
 
-async function saveLog(key,arr){
-  try{
-    const d=await openDB();
-    const blob=await compress(JSON.stringify(arr));
-    await new Promise((res,rej)=>{
-      const tx=d.transaction(STORE,'readwrite');
-      tx.objectStore(STORE).put(blob,key);
-      tx.oncomplete=res;tx.onerror=rej;
-    });
-  }catch(e){console.warn('IDB saveLog:',e);}
-}
 async function loadLogs(){
   try{
     const d=await openDB();
@@ -840,8 +847,8 @@ function doScan(code){
   code=code.trim();
   if(data.length===0){document.getElementById('ndo').classList.add('show');playSound('notfound');return;}
 
-  // ── SHELF MODE: ถ้า barcode ไม่พบในสินค้า → ถือว่าเป็นป้ายชั้น
-  if(shelfMode&&!barcodeIndex.get(code)){
+  // ── SHELF MODE: ถ้ายังไม่ได้ lock ชั้น และ barcode ไม่พบในสินค้า → ถือว่าเป็นป้ายชั้น
+  if(shelfMode&&!currentBox&&!barcodeIndex.get(code)){
     currentBox=code;
     updateShelfBar();
     playSound('shelf');
@@ -856,8 +863,8 @@ function doScan(code){
     return;
   }
 
-  // ── SHELF MODE: สแกนสินค้าโดยยังไม่ได้ lock ชั้น → เตือน
-  if(shelfMode&&!currentBox){
+  // ── SHELF MODE: สแกนสินค้าโดยยังไม่ได้ lock ชั้น และพบสินค้าในระบบ → เตือน
+  if(shelfMode&&!currentBox&&barcodeIndex.get(code)){
     showToast('twrn','⚠️','สแกนป้ายชั้นก่อน แล้วค่อยสแกนสินค้า');
     playSound('notfound');
     return;
@@ -939,17 +946,36 @@ function doScan(code){
 // ── CSV ──
 function handleFile(f){
   if(!f)return;
+  // เช็คนามสกุลไฟล์
+  const ext=f.name.split('.').pop().toLowerCase();
+  if(!['csv','txt'].includes(ext)){
+    setCsvSt('err','❌ ไฟล์ต้องเป็น .csv หรือ .txt เท่านั้น');
+    return;
+  }
+  // เช็คขนาดไฟล์ (max 200MB)
+  if(f.size>200*1024*1024){
+    setCsvSt('err','❌ ไฟล์ใหญ่เกินไป (เกิน 200MB)');
+    return;
+  }
   const r=new FileReader();
+  r.onerror=()=>setCsvSt('err','❌ อ่านไฟล์ไม่ได้ ไฟล์อาจเสียหาย');
   r.onload=e=>{
     let t=e.target.result;
-    // ลบ BOM ถ้ามี (Google Sheets มักมี BOM นำหน้า)
+    if(!t||!t.trim()){setCsvSt('err','❌ ไฟล์ว่างเปล่า');return;}
+    // ลบ BOM ถ้ามี
     if(t.charCodeAt(0)===0xFEFF) t=t.slice(1);
     // ถ้ามีตัวอักษรเสีย → ลอง TIS-620
     if(t.includes('\uFFFD')||t.includes('???')){
       const r2=new FileReader();
+      r2.onerror=()=>setCsvSt('err','❌ อ่านไฟล์ไม่ได้ ลอง encoding อื่นแล้วยังไม่สำเร็จ');
       r2.onload=ev=>{
         let t2=ev.target.result;
         if(t2.charCodeAt(0)===0xFEFF) t2=t2.slice(1);
+        // ถ้า TIS-620 ก็ยังเสีย
+        if(t2.includes('\uFFFD')){
+          setCsvSt('err','❌ encoding ไม่รองรับ — ลอง save ไฟล์เป็น UTF-8 แล้วนำเข้าใหม่');
+          return;
+        }
         parseCSV(t2,f.name);
       };
       r2.readAsText(f,'TIS-620');return;
@@ -960,12 +986,16 @@ function handleFile(f){
 }
 function parseCSV(text,name){
   const lines=text.trim().split(/\r?\n/);
-  if(lines.length<2){setCsvSt('err','⚠️ ไฟล์ว่าง');return;}
+  if(lines.length<1||!lines[0].trim()){setCsvSt('err','❌ ไฟล์ว่าง ไม่มี header');return;}
+  if(lines.length<2){setCsvSt('err','❌ มีแค่ header ไม่มีข้อมูล');return;}
   const d=lines[0].includes('\t')?'\t':',';
   const parse=l=>{const r=[];let c='',q=false;for(const ch of l){if(ch==='"'){q=!q;continue;}if(ch===d&&!q){r.push(c.trim());c='';continue;}c+=ch;}r.push(c.trim());return r;};
   headers=parse(lines[0]);
+  if(headers.length<2){setCsvSt('err','❌ ตรวจไม่พบ column — ลองเปิดไฟล์ดูว่า delimiter เป็น comma หรือ Tab');return;}
   rawRows=lines.slice(1).filter(l=>l.trim()).map(parse);
-  setCsvSt('ok','✔ "'+name+'" — '+rawRows.length+' รายการ');
+  if(!rawRows.length){setCsvSt('err','❌ ไม่มีข้อมูลในไฟล์');return;}
+  setCsvSt('ok','✔ "'+name+'" — '+rawRows.length.toLocaleString()+' รายการ');
+  document.getElementById('valSummary').style.display='none';
   buildMapUI();
 }
 function setCsvSt(t,m){const e=document.getElementById('csvStat');e.className='csv-stat '+t;e.textContent=m;}
@@ -987,11 +1017,43 @@ async function confirmMap(){
         nm=document.getElementById('mNM').value,qt=document.getElementById('mQT').value,
         sk=document.getElementById('mSK').value;
   if(!bc||!bx||!nm){showToast('twrn','⚠️','เลือกคอลัมน์ที่จำเป็นก่อน');return;}
-  const mapped=rawRows.map(row=>{
+
+  // ── VALIDATION ──
+  const issues={dupBC:[],emptyBC:[],emptyBox:[],badQty:[]};
+  const seenBC=new Map();
+  const mapped=[];
+  rawRows.forEach((row,idx)=>{
     const o={};headers.forEach((h,i)=>o[h]=(row[i]||'').trim());
-    return{barcode:(o[bc]||'').trim(),box:(o[bx]||'').trim(),name:(o[nm]||'').trim(),qty:qt?(parseInt(o[qt])||0):null,sku:sk?(o[sk]||'').trim():''};
-  }).filter(r=>r.barcode);
+    const barcode=(o[bc]||'').trim();
+    const box=(o[bx]||'').trim();
+    const name=(o[nm]||'').trim();
+    const qtyRaw=qt?(o[qt]||'').trim():'';
+    const qty=qt?(parseInt(qtyRaw)||0):null;
+    const sku=sk?(o[sk]||'').trim():'';
+    const lineNum=idx+2; // +2 เพราะ header คือ row 1
+
+    if(!barcode){issues.emptyBC.push('แถว '+lineNum);return;}
+    if(seenBC.has(barcode)){issues.dupBC.push(barcode+' (แถว '+lineNum+')');return;} // เก็บอันแรก ข้ามซ้ำ
+    if(!box) issues.emptyBox.push(barcode);
+    if(qt&&qtyRaw&&isNaN(parseInt(qtyRaw))) issues.badQty.push(barcode+' ('+qtyRaw+')');
+    seenBC.set(barcode,true);
+    mapped.push({barcode,box,name,qty,sku});
+  });
+
+  if(!mapped.length){
+    setCsvSt('err','❌ ไม่มีข้อมูลที่ใช้ได้เลย — ตรวจสอบการจับคู่คอลัมน์อีกครั้ง');
+    return;
+  }
+
+  // เช็ค column บาร์โค้ดอาจเลือกผิด (ว่างเกิน 50%)
+  const emptyPct=rawRows.length>0?issues.emptyBC.length/rawRows.length:0;
+  if(emptyPct>0.5){
+    setCsvSt('err','❌ บาร์โค้ดว่างเกิน 50% — อาจเลือก column ผิด');
+    return;
+  }
+
   document.getElementById('mapCard').style.display='none';
+
   // batch import + progress
   const prog=document.getElementById('importProgress');
   const bar=document.getElementById('importBar');
@@ -1012,8 +1074,87 @@ async function confirmMap(){
   await buildIndex();
   renderList();
   await saveData(true);
+  // แสดง summary หลัง import เสร็จแล้ว
+  const totalIssues=issues.dupBC.length+issues.emptyBC.length+issues.emptyBox.length+issues.badQty.length;
+  showValSummary(mapped.length,issues);
   showToast('tok','✅','โหลด '+data.length.toLocaleString()+' รายการแล้ว');
-  goTab('scan');
+  // ถ้าไม่มีปัญหา → ไปหน้าสแกนทันที
+  // ถ้ามีปัญหา → อยู่หน้า import ให้ user อ่านก่อน แล้วค่อยกดเอง
+  if(!totalIssues) goTab('scan');
+}
+
+function showValSummary(total,issues){
+  const container=document.getElementById('valSummary');
+  container.style.display='block';
+  container.textContent='';
+  const totalIssues=issues.dupBC.length+issues.emptyBC.length+issues.emptyBox.length+issues.badQty.length;
+
+  // summary card หลัก
+  const cls=totalIssues>0?'warn':'ok';
+  const icon=totalIssues>0?'⚠️':'✅';
+  const msg=totalIssues>0
+    ?'โหลดสำเร็จ '+total.toLocaleString()+' รายการ — พบปัญหา '+totalIssues+' รายการ'
+    :'โหลดสำเร็จ '+total.toLocaleString()+' รายการ ไม่พบปัญหา';
+
+  const card=mkEl('div','val-card '+cls);
+  const head=mkEl('div','val-head '+cls);
+  head.textContent=icon+' '+msg;
+  card.appendChild(head);
+
+  if(totalIssues>0){
+    const body=mkEl('div','val-body');
+    const addSection=(title,arr)=>{
+      if(!arr.length)return;
+      const t=mkEl('div','');
+      t.style.cssText='font-weight:700;padding:6px 0 3px;color:var(--ink);';
+      t.textContent=title+' ('+arr.length+' รายการ)';
+      body.appendChild(t);
+      arr.slice(0,50).forEach(v=>{const r=mkEl('div','val-row');r.textContent=v;body.appendChild(r);});
+      if(arr.length>50){const m=mkEl('div','val-row');m.textContent='...และอีก '+(arr.length-50)+' รายการ';body.appendChild(m);}
+    };
+    addSection('• บาร์โค้ดซ้ำ (เก็บอันแรก ข้ามไป)',issues.dupBC);
+    addSection('• บาร์โค้ดว่าง (ข้ามไป)',issues.emptyBC);
+    addSection('• Box/ชั้นว่าง',issues.emptyBox);
+    addSection('• จำนวนไม่ใช่ตัวเลข',issues.badQty);
+
+    // ปุ่ม export ปัญหา
+    if(issues.dupBC.length||issues.emptyBC.length){
+      const btn=mkEl('button','val-export');
+      btn.textContent='📤 Export รายการที่มีปัญหา';
+      btn.onclick=()=>exportIssuesCSV(issues);
+      body.appendChild(btn);
+    }
+
+    head.textContent=icon+' '+msg+'  ▼';
+    head.onclick=()=>body.classList.toggle('show');
+    card.appendChild(body);
+
+    // ปุ่มไปหน้าสแกน
+    const goBtn=mkEl('button','big-btn');
+    goBtn.style.cssText='margin-top:10px;background:var(--accent);';
+    goBtn.textContent='ใช้งานได้เลย →';
+    goBtn.onclick=()=>goTab('scan');
+    container.appendChild(card);
+    container.appendChild(goBtn);
+    return;
+  }
+  container.appendChild(card);
+}
+
+function exportIssuesCSV(issues){
+  const rows=[];
+  rows.push('"ประเภทปัญหา","รายละเอียด"');
+  issues.dupBC.forEach(v=>rows.push('"บาร์โค้ดซ้ำ","'+v+'"'));
+  issues.emptyBC.forEach(v=>rows.push('"บาร์โค้ดว่าง","'+v+'"'));
+  issues.emptyBox.forEach(v=>rows.push('"Box/ชั้นว่าง","'+v+'"'));
+  issues.badQty.forEach(v=>rows.push('"จำนวนไม่ใช่ตัวเลข","'+v+'"'));
+  const csv='\uFEFF'+rows.join('\n');
+  const blob=new Blob([csv],{type:'text/csv;charset=utf-8'});
+  const url=URL.createObjectURL(blob);
+  const a=document.createElement('a');
+  a.href=url;a.download='import-issues-'+new Date().toLocaleDateString('th-TH').replace(/\//g,'-')+'.csv';
+  a.click();URL.revokeObjectURL(url);
+  showToast('tok','📤','Export รายการปัญหาแล้ว');
 }
 
 // ── EXPORT CSV ──
@@ -1093,7 +1234,7 @@ function setF(f,btn){curFilter=f;document.querySelectorAll('.fp').forEach(b=>b.c
 function clearAll(){
   if(!confirm('ล้างข้อมูลทั้งหมด?'))return;
   data=[];rawRows=[];headers=[];barcodeIndex.clear();searchIndex=[];
-  scanLog=[];saveLog('scanlog',[]);
+  scanLog=[];saveLogNow('scanlog',[]);
   clearDB();
   document.getElementById('ndo').classList.add('show');
   document.getElementById('csvStat').className='csv-stat';
@@ -1216,7 +1357,10 @@ function doWithdraw(code){
 function renderWdLog(){
   const container=document.getElementById('wdLog');
   if(!withdrawLog.length){
-    container.innerHTML='<div class="wd-idle"><div class="ico">📦</div><p>สแกนสินค้าเพื่อเบิกออก</p></div>';
+    container.textContent='';
+    const idle=mkEl('div','wd-idle');
+    idle.append(mkEl('div','ico','📦'),mkEl('p','','สแกนสินค้าเพื่อเบิกออก'));
+    container.appendChild(idle);
     return;
   }
   const frag=document.createDocumentFragment();
@@ -1251,7 +1395,7 @@ function clearWithdrawLog(){
   withdrawLog=[];
   setText('wdCount','0 รายการ');
   document.getElementById('wdResult').style.display='none';
-  saveLog('withdrawlog',[]);
+  saveLogNow('withdrawlog',[]);
   renderWdLog();
   showToast('twrn','🗑','ล้างรายการเบิกแล้ว');
 }

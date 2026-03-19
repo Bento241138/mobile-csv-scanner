@@ -1,4 +1,4 @@
-const CACHE = 'stock-v3.7';
+const CACHE = 'stock-v3.8';
 const FILES = [
   '/mobile-csv-scanner/index.html',
   '/mobile-csv-scanner/manifest.json',

@@ -212,6 +212,14 @@ select{width:100%;background:var(--bg);border:1px solid var(--border);border-rad
 .sov-track{background:var(--border);border-radius:99px;height:10px;overflow:hidden;}
 .sov-bar{height:100%;background:var(--accent);border-radius:99px;width:0%;transition:width .3s;}
 .sov-pct{font-family:'JetBrains Mono',monospace;font-size:13px;font-weight:700;margin-top:10px;color:var(--accent);}
+/* ── INDEX BANNER (background progress) ── */
+#indexBanner{position:fixed;top:0;left:0;right:0;background:var(--ink);color:#fff;padding:10px 16px;display:none;flex-direction:column;gap:5px;z-index:600;box-shadow:0 2px 12px rgba(0,0,0,.3);}
+#indexBanner.show{display:flex;}
+.ib-row{display:flex;align-items:center;justify-content:space-between;}
+.ib-txt{font-size:12px;font-weight:600;}
+.ib-pct{font-family:'JetBrains Mono',monospace;font-size:12px;color:var(--accent);}
+.ib-track{background:rgba(255,255,255,.2);border-radius:99px;height:4px;overflow:hidden;}
+.ib-bar{height:100%;background:var(--accent);border-radius:99px;width:0%;transition:width .3s;}
 /* ── TOAST ── */
 #toast{position:fixed;top:14px;left:14px;right:14px;background:var(--ink);color:#fff;border-radius:12px;padding:13px 18px;display:flex;align-items:center;gap:10px;font-size:14px;font-weight:500;z-index:999;box-shadow:0 8px 24px rgba(0,0,0,.3);transform:translateY(calc(-100% - 30px));opacity:0;transition:all .3s cubic-bezier(.34,1.4,.64,1);}
 #toast.show{transform:translateY(0);opacity:1;}
@@ -496,6 +504,13 @@ select{width:100%;background:var(--bg);border:1px solid var(--border);border-rad
   <button class="tb"        id="tab-settings" onclick="goTab('settings')"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 010 2.83 2 2 0 01-2.83 0l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83-2.83l.06-.06A1.65 1.65 0 004.68 15a1.65 1.65 0 00-1.51-1H3a2 2 0 010-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 012.83-2.83l.06.06A1.65 1.65 0 009 4.68a1.65 1.65 0 001-1.51V3a2 2 0 014 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 2.83l-.06.06A1.65 1.65 0 0019.4 9a1.65 1.65 0 001.51 1H21a2 2 0 010 4h-.09a1.65 1.65 0 00-1.51 1z"/></svg>ตั้งค่า</button>
 </div>
 <div id="toast"><span id="tI"></span> <span id="tM"></span></div>
+<div id="indexBanner">
+  <div class="ib-row">
+    <span class="ib-txt">⚙️ กำลังสร้าง index...</span>
+    <span class="ib-pct" id="ibPct">0%</span>
+  </div>
+  <div class="ib-track"><div class="ib-bar" id="ibBar"></div></div>
+</div>
 <div id="saveOverlay">
   <div class="sov-box">
     <div class="sov-title">💾 กำลังบันทึกข้อมูล</div>
@@ -576,21 +591,40 @@ function resetShelf(){
   showToast('twrn','📍','รีเซ็ตชั้นแล้ว — สแกนป้ายชั้นใหม่');
 }
 
-// ── INDEXEDDB (compressed blob) ──
-// เก็บข้อมูลเป็น blob เดียวหลัง compress ด้วย gzip
-// ลด size 60-80% ผ่าน Chrome quota ได้
-const DB_NAME='stockDB',DB_VER=2,STORE='blob';
+// ── INDEXEDDB HYBRID ──
+// blob store  → เก็บข้อมูลสินค้า (compressed) + scanlog + withdrawlog
+//               บันทึกเร็ว atomic — ถ้ารีเครื่องกลางคัน blob ยังอยู่ครบ
+// items store → record-based + index บน barcode
+//               ค้นหาเร็วโดยไม่ต้องโหลดเข้า RAM
+// fallback    → ถ้า items store ไม่ครบ (รีเครื่องกลางเขียน) → rebuild จาก blob อัตโนมัติ
+const DB_NAME='stockDB',DB_VER=3,STORE='blob',ITEM_STORE='items';
 let db=null;
 let _saveLogTimer={};
+
+function openDB(){
+  return new Promise((res,rej)=>{
+    if(db)return res(db);
+    const r=indexedDB.open(DB_NAME,DB_VER);
+    r.onupgradeneeded=e=>{
+      const d=e.target.result;
+      if(!d.objectStoreNames.contains(STORE))
+        d.createObjectStore(STORE);
+      if(!d.objectStoreNames.contains(ITEM_STORE)){
+        const st=d.createObjectStore(ITEM_STORE,{keyPath:'barcode'});
+        st.createIndex('barcode','barcode',{unique:true});
+      }
+    };
+    r.onsuccess=e=>{db=e.target.result;res(db);};
+    r.onerror=e=>rej(e);
+  });
+}
+
+// ── LOG ──
 function saveLog(key,arr){
-  // debounce 800ms ป้องกัน rapid scan overlap transactions
-  // หมายเหตุ: arr เป็น reference ของ array จริง (scanLog/withdrawLog)
-  // ถ้าสแกนเร็วต่อเนื่อง debounce จะ save array ล่าสุดเสมอ — ถูกต้องตามต้องการ
   clearTimeout(_saveLogTimer[key]);
   _saveLogTimer[key]=setTimeout(()=>saveLogNow(key,arr),800);
 }
 async function saveLogNow(key,arr){
-  // save ทันทีไม่มี debounce — ใช้ตอน clear
   clearTimeout(_saveLogTimer[key]);
   try{
     const d=await openDB();
@@ -602,21 +636,7 @@ async function saveLogNow(key,arr){
     });
   }catch(e){console.warn('IDB saveLog:',e);}
 }
-function openDB(){
-  return new Promise((res,rej)=>{
-    if(db)return res(db);
-    const r=indexedDB.open(DB_NAME,DB_VER);
-    r.onupgradeneeded=e=>{
-      const d=e.target.result;
-      // ลบ store เก่า (record-based) ถ้ามี
-      if(d.objectStoreNames.contains('items'))d.deleteObjectStore('items');
-      if(!d.objectStoreNames.contains(STORE))
-        d.createObjectStore(STORE);
-    };
-    r.onsuccess=e=>{db=e.target.result;res(db);};
-    r.onerror=e=>rej(e);
-  });
-}
+
 async function compress(str){
   const enc=new TextEncoder().encode(str);
   const cs=new CompressionStream('gzip');
@@ -642,66 +662,191 @@ async function decompress(buf){
   let offset=0;for(const c of chunks){out.set(c,offset);offset+=c.length;}
   return new TextDecoder().decode(out);
 }
+
+// ── SAVE DATA (HYBRID) ──
+// ① compress + บันทึก blob → แสดง overlay (เร็ว ปิดทันที)
+// ② เขียน items store background → แสดงแค่ banner เล็กๆ ใช้งานได้ระหว่างรอ
 async function saveData(showOverlay=false){
   const ov=document.getElementById('saveOverlay');
   const bar=document.getElementById('sovBar');
   const pct=document.getElementById('sovPct');
   const sub=document.getElementById('sovSub');
-  if(showOverlay){ov.classList.add('show');bar.style.width='10%';pct.textContent='10%';sub.textContent='กำลัง compress ข้อมูล...';}
+  if(showOverlay){ov.classList.add('show');bar.style.width='5%';pct.textContent='5%';sub.textContent='กำลัง compress ข้อมูล...';}
   try{
-    const json=JSON.stringify(data);
-    if(showOverlay){bar.style.width='40%';pct.textContent='40%';sub.textContent='กำลัง compress ข้อมูล...';}
-    const blob=await compress(json);
-    if(showOverlay){bar.style.width='70%';pct.textContent='70%';sub.textContent='กำลังบันทึกลงเครื่อง...';}
     const d=await openDB();
-    // safe swap: เขียนลง key 'pending' ก่อน แล้วค่อย swap เป็น 'data'
-    // ถ้า crash กลางคัน ของเก่าใน 'data' ยังอยู่ครบ
-    await new Promise((res,rej)=>{
-      const tx=d.transaction(STORE,'readwrite');
-      const st=tx.objectStore(STORE);
-      st.put(blob,'pending');
-      tx.oncomplete=res;tx.onerror=rej;
-    });
+
+    // ① บันทึก blob (atomic เร็ว)
+    const json=JSON.stringify(data);
+    const blob=await compress(json);
+    if(showOverlay){bar.style.width='80%';pct.textContent='80%';sub.textContent='กำลังบันทึก...';}
     await new Promise((res,rej)=>{
       const tx=d.transaction(STORE,'readwrite');
       const st=tx.objectStore(STORE);
       st.put(blob,'data');
-      st.delete('pending');
+      st.put(data.length,'data_count');
       tx.oncomplete=res;tx.onerror=rej;
     });
+
+    // ปิด overlay ทันที — ใช้งานได้เลย
     if(showOverlay){bar.style.width='100%';pct.textContent='100%';sub.textContent='บันทึกเสร็จแล้ว ✅';}
-    console.log('IDB saved (compressed):',data.length,'rows,',blob.length,'bytes');
-    await new Promise(r=>setTimeout(r,600));
+    console.log('IDB blob saved:',data.length,'records,',blob.length,'bytes');
+    await new Promise(r=>setTimeout(r,500));
     if(showOverlay){ov.classList.remove('show');bar.style.width='0%';}
+
+    // ② เขียน items store background (แสดง banner เล็กๆ)
+    writeItemsBackground(d,data);
+
   }catch(e){
     if(showOverlay)ov.classList.remove('show');
     console.warn('IDB save:',e);
   }
 }
+
+// ── WRITE ITEMS STORE (background) ──
+// snapshot items ก่อนเริ่ม กันกรณี data[] ถูกเปลี่ยนระหว่างเขียน
+async function writeItemsBackground(d,items){
+  const snapshot=[...items]; // snapshot ป้องกัน race condition
+  showIndexBanner(true);
+  try{
+    await new Promise((res,rej)=>{
+      const tx=d.transaction(ITEM_STORE,'readwrite');
+      tx.objectStore(ITEM_STORE).clear();
+      tx.oncomplete=res;tx.onerror=rej;
+    });
+    const BATCH=500;
+    for(let i=0;i<snapshot.length;i+=BATCH){
+      await new Promise((res,rej)=>{
+        const tx=d.transaction(ITEM_STORE,'readwrite');
+        const st=tx.objectStore(ITEM_STORE);
+        snapshot.slice(i,i+BATCH).forEach(item=>st.put(item));
+        tx.oncomplete=res;tx.onerror=rej;
+      });
+      const p=Math.min(100,Math.round((i+BATCH)/snapshot.length*100));
+      setIndexBanner(p);
+      await new Promise(r=>setTimeout(r,0));
+    }
+    console.log('IDB items store ready:',snapshot.length,'records');
+  }catch(e){console.warn('IDB writeItems:',e);}
+  finally{
+    await new Promise(r=>setTimeout(r,800));
+    showIndexBanner(false);
+  }
+}
+
+// ── BANNER HELPER ──
+function showIndexBanner(show,label='⚙️ กำลังสร้าง index...'){
+  const banner=document.getElementById('indexBanner');
+  const txt=banner.querySelector('.ib-txt');
+  if(show){txt.textContent=label;banner.classList.add('show');}
+  else{banner.classList.remove('show');setIndexBanner(0);}
+}
+function setIndexBanner(pct){
+  document.getElementById('ibBar').style.width=pct+'%';
+  document.getElementById('ibPct').textContent=pct+'%';
+}
+
+// ── LOAD DATA (HYBRID) ──
+// เช็ค items store ก่อน — ถ้าครบใช้เลย ถ้าไม่ครบ rebuild จาก blob
 async function loadData(){
   try{
     const d=await openDB();
+
+    // อ่านจำนวนที่ควรมีจาก blob store
+    const expectedCount=await new Promise((res,rej)=>{
+      const tx=d.transaction(STORE,'readonly');
+      const req=tx.objectStore(STORE).get('data_count');
+      req.onsuccess=()=>res(req.result||0);
+      req.onerror=rej;
+    });
+    if(!expectedCount)return; // ยังไม่เคย import
+
+    // แสดง banner ว่ากำลังโหลดข้อมูลเก่า
+    showIndexBanner(true,'📂 กำลังโหลดข้อมูล...');
+
+    // เช็คว่า items store ครบไหม
+    const actualCount=await new Promise((res,rej)=>{
+      const tx=d.transaction(ITEM_STORE,'readonly');
+      const req=tx.objectStore(ITEM_STORE).count();
+      req.onsuccess=()=>res(req.result);
+      req.onerror=rej;
+    });
+
+    if(actualCount<expectedCount){
+      // items store ไม่ครบ (รีเครื่องกลางคัน) → rebuild จาก blob
+      console.log('IDB: items store incomplete ('+actualCount+'/'+expectedCount+'), rebuilding...');
+      await rebuildItemsFromBlob(d); // banner จะถูก handle ใน rebuildItemsFromBlob
+      showIndexBanner(true,'📂 กำลังโหลดข้อมูล...'); // เปิด banner ต่อหลัง rebuild เสร็จ
+    }
+
+    // โหลด searchIndex จาก items store
+    setIndexBanner(50);
+    await buildSearchIndex();
+    const count=searchIndex.length;
+    showIndexBanner(false);
+    if(!count)return;
+
+    document.getElementById('ndo').classList.remove('show');
+    setText('dataInfo',count.toLocaleString()+' รายการ (โหลดจากที่บันทึกไว้)');
+    setCsvSt('ok','✔ โหลดข้อมูล '+count.toLocaleString()+' รายการจากที่บันทึกไว้');
+    renderList();
+    showToast('tok','💾','โหลดข้อมูลเดิม '+count.toLocaleString()+' รายการแล้ว');
+  }catch(e){showIndexBanner(false);console.warn('IDB load:',e);}
+}
+
+// ── REBUILD — อ่าน blob แล้วเขียน items store ใหม่ (fallback หลังรีเครื่อง) ──
+async function rebuildItemsFromBlob(d){
+  showIndexBanner(true,'🔄 กำลังซ่อมข้อมูล...');
+  try{
     const blob=await new Promise((res,rej)=>{
       const tx=d.transaction(STORE,'readonly');
       const req=tx.objectStore(STORE).get('data');
       req.onsuccess=()=>res(req.result||null);
       req.onerror=rej;
     });
-    if(!blob)return;
+    if(!blob){showIndexBanner(false);return;}
     const json=await decompress(blob);
-    data=JSON.parse(json);
-    if(!data.length)return;
-    await buildIndex();
-    document.getElementById('ndo').classList.remove('show');
-    setText('dataInfo',data.length.toLocaleString()+' รายการ (โหลดจากที่บันทึกไว้)');
-    setCsvSt('ok','✔ โหลดข้อมูล '+data.length.toLocaleString()+' รายการจากที่บันทึกไว้');
-    renderList();
-    showToast('tok','💾','โหลดข้อมูลเดิม '+data.length.toLocaleString()+' รายการแล้ว');
-  }catch(e){console.warn('IDB load:',e);}
+    const items=JSON.parse(json);
+    await new Promise((res,rej)=>{
+      const tx=d.transaction(ITEM_STORE,'readwrite');
+      tx.objectStore(ITEM_STORE).clear();
+      tx.oncomplete=res;tx.onerror=rej;
+    });
+    const BATCH=500;
+    for(let i=0;i<items.length;i+=BATCH){
+      await new Promise((res,rej)=>{
+        const tx=d.transaction(ITEM_STORE,'readwrite');
+        const st=tx.objectStore(ITEM_STORE);
+        items.slice(i,i+BATCH).forEach(item=>st.put(item));
+        tx.oncomplete=res;tx.onerror=rej;
+      });
+      setIndexBanner(Math.min(100,Math.round((i+BATCH)/items.length*100)));
+    }
+    console.log('IDB: rebuild complete,',items.length,'records');
+  }catch(e){console.warn('IDB rebuild:',e);}
+  finally{showIndexBanner(false);}
 }
+
+// ── LOOKUP — ค้นหาด้วย IDB index โดยตรง ──
+async function lookupBarcode(code){
+  try{
+    const d=await openDB();
+    return await new Promise((res,rej)=>{
+      const tx=d.transaction(ITEM_STORE,'readonly');
+      const req=tx.objectStore(ITEM_STORE).index('barcode').get(code);
+      req.onsuccess=()=>res(req.result||null);
+      req.onerror=rej;
+    });
+  }catch(e){console.warn('IDB lookup:',e);return null;}
+}
+
 async function clearDB(){
   try{
     const d=await openDB();
+    await new Promise((res,rej)=>{
+      const tx=d.transaction(ITEM_STORE,'readwrite');
+      tx.objectStore(ITEM_STORE).clear();
+      tx.oncomplete=res;tx.onerror=rej;
+    });
     await new Promise((res,rej)=>{
       const tx=d.transaction(STORE,'readwrite');
       tx.objectStore(STORE).clear();
@@ -722,7 +867,29 @@ async function loadLogs(){
   }catch(e){console.warn('IDB loadLogs:',e);}
 }
 
+// ── BUILD SEARCH INDEX จาก items store ──
+async function buildSearchIndex(){
+  searchIndex=[];
+  barcodeIndex.clear();
+  try{
+    const d=await openDB();
+    await new Promise((res,rej)=>{
+      const tx=d.transaction(ITEM_STORE,'readonly');
+      const req=tx.objectStore(ITEM_STORE).openCursor();
+      req.onsuccess=e=>{
+        const cursor=e.target.result;
+        if(!cursor){res();return;}
+        const item=cursor.value;
+        searchIndex.push({lc:(item.name+' '+item.barcode+' '+item.box+' '+(item.sku||'')).toLowerCase(),item});
+        cursor.continue();
+      };
+      req.onerror=rej;
+    });
+  }catch(e){console.warn('IDB buildSearchIndex:',e);}
+}
+
 async function buildIndex(){
+  // ใช้ตอน import ใหม่ (data[] มีข้อมูลอยู่แล้ว)
   barcodeIndex.clear();
   searchIndex=[];
   const BATCH=2000;
@@ -843,37 +1010,37 @@ function handScan(){const v=document.getElementById('handIn').value.trim();if(!v
 document.getElementById('handIn').addEventListener('keydown',e=>{if(e.key==='Enter')handScan();});
 
 // ── SCAN RESULT ──
-function doScan(code){
+async function doScan(code){
   if(!code||!code.trim())return;
   code=code.trim();
-  if(data.length===0){document.getElementById('ndo').classList.add('show');playSound('notfound');return;}
+  if(!searchIndex.length){document.getElementById('ndo').classList.add('show');playSound('notfound');return;}
 
-  // ── SHELF MODE: ถ้ายังไม่ได้ lock ชั้น และ barcode ไม่พบในสินค้า → ถือว่าเป็นป้ายชั้น
-  if(shelfMode&&!currentBox&&!barcodeIndex.get(code)){
-    currentBox=code;
-    updateShelfBar();
-    playSound('shelf');
-    showToast('tok','📍','ล็อคชั้น: '+code);
-    document.getElementById('scanIdle').style.display='none';
-    document.getElementById('scanResult').style.display='block';
-    document.getElementById('rsStatus').className='rs-status ok';
-    setText('rsStatus','📍 ล็อคชั้นแล้ว');
-    setText('rsName','ชั้น: '+code);
-    setText('rsCode','สแกนสินค้าได้เลย');
-    document.getElementById('rsChips').textContent='';
-    return;
-  }
-
-  // ── SHELF MODE: สแกนสินค้าโดยยังไม่ได้ lock ชั้น และพบสินค้าในระบบ → เตือน
-  if(shelfMode&&!currentBox&&barcodeIndex.get(code)){
-    showToast('twrn','⚠️','สแกนป้ายชั้นก่อน แล้วค่อยสแกนสินค้า');
-    playSound('notfound');
-    return;
+  // ── SHELF MODE: ถ้ายังไม่ได้ lock ชั้น → query IDB ก่อนว่าเป็นสินค้าหรือป้ายชั้น
+  if(shelfMode&&!currentBox){
+    const found=await lookupBarcode(code);
+    if(!found){
+      currentBox=code;
+      updateShelfBar();
+      playSound('shelf');
+      showToast('tok','📍','ล็อคชั้น: '+code);
+      document.getElementById('scanIdle').style.display='none';
+      document.getElementById('scanResult').style.display='block';
+      document.getElementById('rsStatus').className='rs-status ok';
+      setText('rsStatus','📍 ล็อคชั้นแล้ว');
+      setText('rsName','ชั้น: '+code);
+      setText('rsCode','สแกนสินค้าได้เลย');
+      document.getElementById('rsChips').textContent='';
+      return;
+    }else{
+      showToast('twrn','⚠️','สแกนป้ายชั้นก่อน แล้วค่อยสแกนสินค้า');
+      playSound('notfound');
+      return;
+    }
   }
 
   scanCount++;setText('scanCnt',scanCount);
   const thr=parseInt(document.getElementById('thr').value)||5;
-  const item=barcodeIndex.get(code);
+  const item=await lookupBarcode(code);
   document.getElementById('scanIdle').style.display='none';
   document.getElementById('scanResult').style.display='block';
 
@@ -1184,7 +1351,8 @@ function scheduleRender(){
 function renderList(){
   const q=(document.getElementById('searchIn')?.value||'').toLowerCase().trim();
   const thr=parseInt(document.getElementById('thr').value)||5;
-  let filtered=q?searchIndex.filter(({lc})=>lc.includes(q)).map(({item})=>item):data;
+  const allItems=searchIndex.map(({item})=>item);
+  let filtered=q?searchIndex.filter(({lc})=>lc.includes(q)).map(({item})=>item):allItems;
   if(curFilter!=='all'){
     filtered=filtered.filter(i=>{
       if(curFilter==='low')return i.qty!==null&&i.qty>0&&i.qty<=thr;
@@ -1193,9 +1361,9 @@ function renderList(){
       return true;
     });
   }
-  setText('st-t',data.length);
-  setText('st-l',data.filter(i=>i.qty!==null&&i.qty>0&&i.qty<=thr).length);
-  setText('st-o',data.filter(i=>i.qty!==null&&i.qty===0).length);
+  setText('st-t',allItems.length);
+  setText('st-l',allItems.filter(i=>i.qty!==null&&i.qty>0&&i.qty<=thr).length);
+  setText('st-o',allItems.filter(i=>i.qty!==null&&i.qty===0).length);
   const container=document.getElementById('items');
   if(!filtered.length){
     container.textContent='';
@@ -1236,10 +1404,14 @@ function clearAll(){
   if(!confirm('ล้างข้อมูลทั้งหมด?'))return;
   data=[];rawRows=[];headers=[];barcodeIndex.clear();searchIndex=[];
   scanLog=[];saveLogNow('scanlog',[]);
+  withdrawLog=[];saveLogNow('withdrawlog',[]);
+  showIndexBanner(false); // ยกเลิก banner ถ้ากำลังเขียนอยู่
   clearDB();
   document.getElementById('ndo').classList.add('show');
   document.getElementById('csvStat').className='csv-stat';
-  setText('dataInfo','ยังไม่มีข้อมูล');renderList();
+  setText('dataInfo','ยังไม่มีข้อมูล');
+  setText('wdCount','0 รายการ');
+  renderList();renderWdLog();
   showToast('twrn','🗑','ล้างข้อมูลแล้ว');
 }
 
@@ -1308,11 +1480,11 @@ function stopWdCamera(){
   }).catch(()=>{});
 }
 
-function doWithdraw(code){
+async function doWithdraw(code){
   if(!code||!code.trim())return;
   code=code.trim();
-  if(data.length===0){showToast('twrn','⚠️','ยังไม่มีข้อมูลสินค้า');return;}
-  const item=barcodeIndex.get(code);
+  if(!searchIndex.length){showToast('twrn','⚠️','ยังไม่มีข้อมูลสินค้า');return;}
+  const item=await lookupBarcode(code);
 
   // แสดง result
   document.getElementById('wdResult').style.display='block';

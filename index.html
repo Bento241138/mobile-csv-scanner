@@ -694,7 +694,8 @@ async function saveData(showOverlay=false){
     if(showOverlay){ov.classList.remove('show');bar.style.width='0%';}
 
     // ② เขียน items store background (แสดง banner เล็กๆ)
-    writeItemsBackground(d,data);
+    // คืน promise ออกไป เผื่อ caller ต้องการรอก่อนแสดง summary
+    return writeItemsBackground(d,data);
 
   }catch(e){
     if(showOverlay)ov.classList.remove('show');
@@ -778,8 +779,7 @@ async function loadData(){
       showIndexBanner(true,'📂 กำลังโหลดข้อมูล...'); // เปิด banner ต่อหลัง rebuild เสร็จ
     }
 
-    // โหลด searchIndex จาก items store
-    setIndexBanner(50);
+    // โหลด searchIndex จาก items store (progress อยู่ใน buildSearchIndex)
     await buildSearchIndex();
     const count=searchIndex.length;
     showIndexBanner(false);
@@ -873,6 +873,14 @@ async function buildSearchIndex(){
   barcodeIndex.clear();
   try{
     const d=await openDB();
+    // นับจำนวนทั้งหมดก่อน เพื่อคำนวณ %
+    const total=await new Promise((res,rej)=>{
+      const tx=d.transaction(ITEM_STORE,'readonly');
+      const req=tx.objectStore(ITEM_STORE).count();
+      req.onsuccess=()=>res(req.result||0);
+      req.onerror=rej;
+    });
+    let count=0,lastP=0;
     await new Promise((res,rej)=>{
       const tx=d.transaction(ITEM_STORE,'readonly');
       const req=tx.objectStore(ITEM_STORE).openCursor();
@@ -881,6 +889,12 @@ async function buildSearchIndex(){
         if(!cursor){res();return;}
         const item=cursor.value;
         searchIndex.push({lc:(item.name+' '+item.barcode+' '+item.box+' '+(item.sku||'')).toLowerCase(),item});
+        count++;
+        // update % ทุก record แต่ throttle ด้วย rAF กัน UI กระตุก
+        if(total>0){
+          const p=Math.min(99,Math.round(count/total*100));
+          if(p!==lastP){lastP=p;setIndexBanner(p);}
+        }
         cursor.continue();
       };
       req.onerror=rej;
@@ -1241,14 +1255,17 @@ async function confirmMap(){
   setText('dataInfo',data.length.toLocaleString()+' รายการในระบบ');
   await buildIndex();
   renderList();
-  await saveData(true);
-  // แสดง summary หลัง import เสร็จแล้ว
   const totalIssues=issues.dupBC.length+issues.emptyBC.length+issues.emptyBox.length+issues.badQty.length;
-  showValSummary(mapped.length,issues);
+  const bgJob=await saveData(true); // bgJob = promise ของ writeItemsBackground
+  if(!totalIssues){
+    // ไม่มีปัญหา → ไปหน้าสแกนทันที banner ค่อยหายเอง
+    goTab('scan');
+  }else{
+    // มีปัญหา → รอ banner หายก่อน แล้วค่อยแสดง summary
+    if(bgJob) await bgJob;
+    showValSummary(mapped.length,issues);
+  }
   showToast('tok','✅','โหลด '+data.length.toLocaleString()+' รายการแล้ว');
-  // ถ้าไม่มีปัญหา → ไปหน้าสแกนทันที
-  // ถ้ามีปัญหา → อยู่หน้า import ให้ user อ่านก่อน แล้วค่อยกดเอง
-  if(!totalIssues) goTab('scan');
 }
 
 function showValSummary(total,issues){

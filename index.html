@@ -64,6 +64,18 @@ html,body{font-family:'Sarabun',sans-serif;background:var(--bg);color:var(--ink)
 #scr-scan.active{display:flex;flex-direction:column;overflow:hidden;}
 
 /* ── MODE BAR ── */
+.scan-top{
+  background:linear-gradient(160deg,#1a1a2e 0%,#16213e 60%,#0f3460 100%);
+  padding:16px 16px 14px;flex-shrink:0;
+  display:flex;align-items:center;justify-content:space-between;
+  box-shadow:0 4px 20px rgba(0,0,0,.25);
+}
+.scan-title{font-size:18px;font-weight:700;color:#fff;letter-spacing:-.3px;}
+.scan-count-badge{
+  font-family:'JetBrains Mono',monospace;font-size:12px;
+  color:rgba(255,255,255,.5);background:rgba(255,255,255,.1);
+  border:1px solid rgba(255,255,255,.12);border-radius:99px;padding:4px 12px;
+}
 .mode-bar{
   display:flex;
   background:rgba(26,26,46,.96);
@@ -763,6 +775,10 @@ select:focus{
 
 <!-- ══ SCAN ══ -->
 <div class="screen active" id="scr-scan">
+  <div class="scan-top">
+    <div class="scan-title">สแกนสต๊อก</div>
+    <div class="scan-count-badge" id="scanBadge">0 ครั้ง</div>
+  </div>
   <div class="mode-bar">
     <button class="mode-btn active" id="mBtn-hand" onclick="setMode('hand')"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0110 0v4"/></svg> พิมพ์มือ</button>
     <button class="mode-btn"        id="mBtn-gun"  onclick="setMode('gun')"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M3 8h12l2 4H3z"/><path d="M15 10h2l2-2h2"/><line x1="7" y1="12" x2="7" y2="16"/><path d="M5 16h6l1 3H4z"/></svg> ปืนสแกน</button>
@@ -1075,7 +1091,6 @@ function mkEl(tag,cls,txt){const e=document.createElement(tag);if(cls)e.classNam
 
 // ── STATE ──
 let data=[],rawRows=[],headers=[];
-let barcodeIndex=new Map();
 let searchIndex=[];
 let soundOn=true,scanCount=0,curFilter='all',lastHL=null;
 let html5QrCode=null,camRunning=false,torchOn=false,scanCooldown=false;
@@ -1163,7 +1178,23 @@ function openDB(){
         st.createIndex('barcode','barcode',{unique:true});
       }
     };
-    r.onsuccess=e=>{db=e.target.result;res(db);};
+    r.onsuccess=e=>{
+      db=e.target.result;
+      // ถ้า tab อื่น upgrade DB version ใหม่ → ปิด connection นี้ทันที
+      // กัน tab เก่า block DB upgrade ของ tab ใหม่
+      db.onversionchange=()=>{
+        db.close();
+        db=null;
+        if(typeof showToast==='function')
+          showToast('twrn','🔄','พบเวอร์ชันใหม่ — กรุณารีโหลดหน้า');
+      };
+      res(db);
+    };
+    // ถ้า tab อื่นยังเปิด connection เก่าอยู่ → แจ้งผู้ใช้แทนที่จะค้างเงียบ
+    r.onblocked=()=>{
+      if(typeof showToast==='function')
+        showToast('twrn','⚠️','กรุณาปิด tab อื่นที่เปิดแอพนี้อยู่ แล้วรีโหลด');
+    };
     r.onerror=e=>rej(e);
   });
 }
@@ -1254,6 +1285,8 @@ async function saveData(showOverlay=false){
 
 // ── WRITE ITEMS STORE (background) ──
 // snapshot items ก่อนเริ่ม กันกรณี data[] ถูกเปลี่ยนระหว่างเขียน
+let _clearFlag=false; // flag หยุด writeItemsBackground ถ้า clearAll ถูกเรียก
+
 async function writeItemsBackground(d,items){
   const snapshot=[...items]; // snapshot ป้องกัน race condition
   showIndexBanner(true);
@@ -1265,6 +1298,7 @@ async function writeItemsBackground(d,items){
     });
     const BATCH=500;
     for(let i=0;i<snapshot.length;i+=BATCH){
+      if(_clearFlag){console.log('IDB writeItems: cancelled by clearAll');break;}
       await new Promise((res,rej)=>{
         const tx=d.transaction(ITEM_STORE,'readwrite');
         const st=tx.objectStore(ITEM_STORE);
@@ -1362,6 +1396,7 @@ async function rebuildItemsFromBlob(d){
     });
     const BATCH=500;
     for(let i=0;i<items.length;i+=BATCH){
+      if(_clearFlag){console.log('IDB rebuild: cancelled by clearAll');break;}
       await new Promise((res,rej)=>{
         const tx=d.transaction(ITEM_STORE,'readwrite');
         const st=tx.objectStore(ITEM_STORE);
@@ -1375,17 +1410,26 @@ async function rebuildItemsFromBlob(d){
   finally{showIndexBanner(false);}
 }
 
-// ── LOOKUP — ค้นหาด้วย IDB index โดยตรง ──
+// ── LOOKUP — ค้นหาด้วย IDB index โดยตรง + fallback searchIndex ──
 async function lookupBarcode(code){
   try{
     const d=await openDB();
-    return await new Promise((res,rej)=>{
+    const item=await new Promise((res,rej)=>{
       const tx=d.transaction(ITEM_STORE,'readonly');
       const req=tx.objectStore(ITEM_STORE).index('barcode').get(code);
       req.onsuccess=()=>res(req.result||null);
       req.onerror=rej;
     });
-  }catch(e){console.warn('IDB lookup:',e);return null;}
+    if(item)return item;
+    // fallback: items store ยังเขียนไม่ครบ → หาจาก searchIndex ใน RAM
+    const found=searchIndex.find(({item})=>item.barcode===code);
+    return found?.item||null;
+  }catch(e){
+    console.warn('IDB lookup:',e);
+    // fallback กรณี IDB error
+    const found=searchIndex.find(({item})=>item.barcode===code);
+    return found?.item||null;
+  }
 }
 
 async function clearDB(){
@@ -1419,7 +1463,6 @@ async function loadLogs(){
 // ── BUILD SEARCH INDEX จาก items store ──
 async function buildSearchIndex(){
   searchIndex=[];
-  barcodeIndex.clear();
   try{
     const d=await openDB();
     // นับจำนวนทั้งหมดก่อน เพื่อคำนวณ %
@@ -1452,14 +1495,12 @@ async function buildSearchIndex(){
 }
 
 async function buildIndex(){
-  // ใช้ตอน import ใหม่ (data[] มีข้อมูลอยู่แล้ว)
-  barcodeIndex.clear();
+  // ใช้ตอน import ใหม่ (data[] มีข้อมูลอยู่แล้ว) — สร้างแค่ searchIndex
   searchIndex=[];
   const BATCH=2000;
   for(let i=0;i<data.length;i+=BATCH){
     const chunk=data.slice(i,i+BATCH);
     for(const item of chunk){
-      barcodeIndex.set(item.barcode,item);
       searchIndex.push({lc:(item.name+' '+item.barcode+' '+item.box+' '+(item.sku||'')).toLowerCase(),item});
     }
     await new Promise(r=>setTimeout(r,0));
@@ -1637,7 +1678,7 @@ async function _doScanInner(code){
   });
   saveLog('scanlog',scanLog);
 
-  scanCount++;setText('scanCnt',scanCount);
+  scanCount++;setText('scanCnt',scanCount);setText('scanBadge',scanCount+' ครั้ง');
   if(!item){
     playSound('notfound');
     document.getElementById('rsStatus').className='rs-status nf';
@@ -1715,7 +1756,7 @@ function handleFile(f){
     // ลบ BOM ถ้ามี
     if(t.charCodeAt(0)===0xFEFF) t=t.slice(1);
     // ถ้ามีตัวอักษรเสีย → ลอง TIS-620
-    if(t.includes('\uFFFD')||t.includes('???')){
+    if(t.includes('\uFFFD')){
       const r2=new FileReader();
       r2.onerror=()=>setCsvSt('err','❌ อ่านไฟล์ไม่ได้ ลอง encoding อื่นแล้วยังไม่สำเร็จ');
       r2.onload=ev=>{
@@ -1738,7 +1779,11 @@ function parseCSV(text,name){
   const lines=text.trim().split(/\r?\n/);
   if(lines.length<1||!lines[0].trim()){setCsvSt('err','❌ ไฟล์ว่าง ไม่มี header');return;}
   if(lines.length<2){setCsvSt('err','❌ มีแค่ header ไม่มีข้อมูล');return;}
-  const d=lines[0].includes('\t')?'\t':',';
+  // นับ delimiter จากหลายบรรทัดแรก กัน header ไม่มี tab แต่ data มี
+  const sample=lines.slice(0,Math.min(5,lines.length)).join('\n');
+  const tabCount=(sample.match(/\t/g)||[]).length;
+  const commaCount=(sample.match(/,/g)||[]).length;
+  const d=tabCount>commaCount?'\t':',' ;
   const parse=l=>{const r=[];let c='',q=false;for(const ch of l){if(ch==='"'){q=!q;continue;}if(ch===d&&!q){r.push(c.trim());c='';continue;}c+=ch;}r.push(c.trim());return r;};
   headers=parse(lines[0]);
   if(headers.length<2){setCsvSt('err','❌ ตรวจไม่พบ column — ลองเปิดไฟล์ดูว่า delimiter เป็น comma หรือ Tab');return;}
@@ -1778,14 +1823,16 @@ async function confirmMap(){
     const box=(o[bx]||'').trim();
     const name=(o[nm]||'').trim();
     const qtyRaw=qt?(o[qt]||'').trim():'';
-    const qty=qt?(parseInt(qtyRaw)||0):null;
+    // ใช้ Math.floor รองรับ decimal และตรวจ badQty ก่อน parse
+    const qtyNum=qtyRaw!==''?Number(qtyRaw):NaN;
+    const qty=qt?(qtyRaw===''?0:(!isNaN(qtyNum)?Math.floor(qtyNum):0)):null;
     const sku=sk?(o[sk]||'').trim():'';
     const lineNum=idx+2; // +2 เพราะ header คือ row 1
 
     if(!barcode){issues.emptyBC.push('แถว '+lineNum);return;}
     if(seenBC.has(barcode)){issues.dupBC.push(barcode+' (แถว '+lineNum+')');return;} // เก็บอันแรก ข้ามซ้ำ
     if(!box) issues.emptyBox.push(barcode);
-    if(qt&&qtyRaw&&isNaN(parseInt(qtyRaw))) issues.badQty.push(barcode+' ('+qtyRaw+')');
+    if(qt&&qtyRaw&&isNaN(qtyNum)) issues.badQty.push(barcode+' ('+qtyRaw+')');
     seenBC.set(barcode,true);
     mapped.push({barcode,box,name,qty,sku});
   });
@@ -1824,13 +1871,13 @@ async function confirmMap(){
   await buildIndex();
   renderList();
   const totalIssues=issues.dupBC.length+issues.emptyBC.length+issues.emptyBox.length+issues.badQty.length;
-  const bgJob=await saveData(true); // bgJob = promise ของ writeItemsBackground
+  const bgJobPromise=saveData(true); // ไม่ await — non-blocking, return Promise<Promise>
   if(!totalIssues){
-    // ไม่มีปัญหา → ไปหน้าสแกนทันที banner ค่อยหายเอง
     goTab('scan');
   }else{
-    // มีปัญหา → รอ banner หายก่อน แล้วค่อยแสดง summary
-    if(bgJob) await bgJob;
+    // มีปัญหา → รอ blob บันทึก + writeItemsBackground เสร็จก่อน แล้วค่อยแสดง summary
+    const bgJob=await bgJobPromise; // รอ blob เสร็จ ได้ writeItemsBackground promise
+    if(bgJob) await bgJob;          // รอ items store เสร็จ
     showValSummary(mapped.length,issues);
   }
   showToast('tok','✅','โหลด '+data.length.toLocaleString()+' รายการแล้ว');
@@ -1925,7 +1972,7 @@ function exportCSV(){
 }
 
 // ── LIST ──
-const VISIBLE=200;
+const VISIBLE=100;
 function scheduleRender(){
   clearTimeout(searchDebounce);
   searchDebounce=setTimeout(()=>{
@@ -1937,6 +1984,7 @@ function renderList(){
   const container=document.getElementById('items');
   if(!searchIndex.length){
     container.textContent='';
+    setText('st-t','0');setText('st-l','0');setText('st-o','0');
     return; // ไม่มีข้อมูล — ไม่ต้อง render
   }
   const q=(document.getElementById('searchIn')?.value||'').toLowerCase().trim();
@@ -1993,23 +2041,33 @@ function renderList(){
 function setF(f,btn){curFilter=f;document.querySelectorAll('.fp').forEach(b=>b.classList.remove('active'));btn.classList.add('active');renderList();}
 function clearAll(){
   if(!confirm('ล้างข้อมูลทั้งหมด?'))return;
+  _clearFlag=true; // หยุด writeItemsBackground ถ้ากำลังรันอยู่
+  setTimeout(()=>{_clearFlag=false;},2000);
   // ยกเลิก pending renders/timers
   if(renderRAF)cancelAnimationFrame(renderRAF);
   clearTimeout(searchDebounce);
   renderRAF=null;searchDebounce=null;
   // reset state ทั้งหมด
-  data=[];rawRows=[];headers=[];barcodeIndex.clear();searchIndex=[];
+  data=[];rawRows=[];headers=[];searchIndex=[];
   scanLog=[];saveLogNow('scanlog',[]);
   withdrawLog=[];saveLogNow('withdrawlog',[]);
   scanCount=0;lastHL=null;
+  // reset shelf mode
+  currentBox=null;
+  updateShelfBar();
   showIndexBanner(false);
   clearDB();
   // reset UI ทุกหน้าทันที ไม่รอ goTab
   document.getElementById('ndo').classList.add('show');
   document.getElementById('csvStat').className='csv-stat';
+  document.getElementById('csvStat').textContent='';
+  document.getElementById('mapCard').style.display='none';
+  document.getElementById('valSummary').style.display='none';
+  document.getElementById('valSummary').textContent='';
+  document.getElementById('fileIn').value='';
   setText('dataInfo','ยังไม่มีข้อมูล');
   setText('logCount','ยังไม่มีประวัติ');
-  setText('scanCnt','0');
+  setText('scanCnt','0');setText('scanBadge','0 ครั้ง');
   setText('wdCount','0 รายการ');
   // force reset _activeTab เพื่อให้ goTab ทำงานได้แม้อยู่หน้าเดิม
   _activeTab='';
@@ -2234,7 +2292,8 @@ if(/iPad|iPhone|iPod/.test(navigator.userAgent))
 // ── INIT ──
 (async()=>{
   try{
-    await Promise.all([loadData(),loadLogs()]);
+    await loadData();  // รัน sequential กัน IDB transaction ชนกันบน iOS
+    await loadLogs();
   }catch(e){
     console.error('Init error:',e);
     showToast('terr','⚠️','โหลดข้อมูลไม่สำเร็จ — ลองรีโหลดหน้า');
